@@ -21,6 +21,7 @@ pub struct Probe {
 #[derive(Clone, Debug, Default)]
 pub struct ProbeState {
     active: Option<Probe>,
+    next_probe_at: Option<Instant>,
 }
 
 impl ProbeState {
@@ -80,6 +81,8 @@ pub struct ProbeSchedule {
     pub positive_delta: f64,
     pub negative_factor: f64,
     pub duration: Duration,
+    pub min_interval: Duration,
+    pub max_interval: Duration,
 }
 
 impl Default for ProbeSchedule {
@@ -90,12 +93,14 @@ impl Default for ProbeSchedule {
             positive_delta: 1.0,
             negative_factor: 0.8,
             duration: Duration::from_secs(1),
+            min_interval: Duration::from_secs(1),
+            max_interval: Duration::from_secs(5),
         }
     }
 }
 
 impl ProbeSchedule {
-    /// Validates the probabilities and perturbation parameters.
+    /// Validates the probabilities, perturbation parameters, and timing.
     ///
     /// # Panics
     ///
@@ -118,6 +123,10 @@ impl ProbeSchedule {
             "negative probe factor must be finite and in (0, 1)"
         );
         assert!(!self.duration.is_zero(), "probe duration must be positive");
+        assert!(
+            !self.min_interval.is_zero() && self.max_interval >= self.min_interval,
+            "probe interval bounds must be positive and ordered"
+        );
     }
 
     /// Starts at most one probe when the endpoint is not already probing.
@@ -131,6 +140,17 @@ impl ProbeSchedule {
         if state.active(now).is_some() {
             return state.current();
         }
+
+        let due_at = state.next_probe_at.get_or_insert(now);
+        if *due_at > now {
+            return None;
+        }
+
+        let interval = self.random_interval(rng);
+        state.next_probe_at = Some(
+            now.checked_add(interval)
+                .expect("probe schedule overflowed Instant"),
+        );
 
         let draw = rng.random::<f64>();
         if draw < self.positive_probability {
@@ -148,5 +168,15 @@ impl ProbeSchedule {
         } else {
             None
         }
+    }
+
+    fn random_interval<R: Rng + ?Sized>(&self, rng: &mut R) -> Duration {
+        let span = self.max_interval - self.min_interval;
+        if span.is_zero() {
+            return self.min_interval;
+        }
+
+        let jitter = Duration::from_secs_f64(span.as_secs_f64() * rng.random::<f64>()).min(span);
+        self.min_interval + jitter
     }
 }

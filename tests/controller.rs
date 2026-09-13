@@ -166,6 +166,33 @@ fn controller_can_drive_seeded_stochastic_probes() {
 }
 
 #[test]
+fn probe_schedule_is_time_gated() {
+    let now = at_zero();
+    let mut state = ProbeState::new();
+    let schedule = ProbeSchedule {
+        positive_probability: 1.0,
+        negative_probability: 0.0,
+        duration: Duration::from_millis(100),
+        min_interval: Duration::from_secs(1),
+        max_interval: Duration::from_secs(1),
+        ..ProbeSchedule::default()
+    };
+    let mut rng = rand::rngs::StdRng::seed_from_u64(5);
+
+    assert!(schedule.maybe_start(&mut state, &mut rng, now).is_some());
+    assert!(
+        schedule
+            .maybe_start(&mut state, &mut rng, now + Duration::from_millis(100))
+            .is_none()
+    );
+    assert!(
+        schedule
+            .maybe_start(&mut state, &mut rng, now + Duration::from_secs(1))
+            .is_some()
+    );
+}
+
+#[test]
 #[should_panic(expected = "probe probabilities")]
 fn probe_schedule_rejects_probabilities_that_exceed_one() {
     let now = at_zero();
@@ -173,6 +200,21 @@ fn probe_schedule_rejects_probabilities_that_exceed_one() {
     let schedule = ProbeSchedule {
         positive_probability: 0.8,
         negative_probability: 0.3,
+        ..ProbeSchedule::default()
+    };
+    let mut rng = rand::rngs::StdRng::seed_from_u64(5);
+
+    schedule.maybe_start(&mut state, &mut rng, now);
+}
+
+#[test]
+#[should_panic(expected = "probe interval bounds")]
+fn probe_schedule_rejects_invalid_interval_bounds() {
+    let now = at_zero();
+    let mut state = ProbeState::new();
+    let schedule = ProbeSchedule {
+        min_interval: Duration::from_secs(2),
+        max_interval: Duration::from_secs(1),
         ..ProbeSchedule::default()
     };
     let mut rng = rand::rngs::StdRng::seed_from_u64(5);

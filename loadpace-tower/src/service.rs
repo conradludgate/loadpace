@@ -3,6 +3,7 @@ use loadpace::{
     DispatchReservation, DispatchState, EndpointConfig, EndpointController, InFlightRequest,
     Outcome,
 };
+use rand::Rng;
 use std::future::Future;
 use std::marker::PhantomData;
 use std::pin::Pin;
@@ -97,6 +98,23 @@ impl<S> AdaptiveEndpoint<S> {
             .lock()
             .expect("controller mutex poisoned")
             .start_negative_probe(factor, until, now);
+    }
+
+    /// Gives a caller-provided RNG a time-gated chance to start a probe.
+    ///
+    /// The method is intentionally caller-driven: applications can choose
+    /// where to run the check and simulations can provide deterministic RNGs.
+    pub fn maybe_start_probe<R: Rng + ?Sized>(
+        &self,
+        schedule: &loadpace::ProbeSchedule,
+        rng: &mut R,
+    ) -> Option<loadpace::Probe> {
+        let now = Instant::now();
+        self.shared
+            .controller
+            .lock()
+            .expect("controller mutex poisoned")
+            .maybe_start_probe(schedule, rng, now)
     }
 
     pub fn load_metric(&self) -> LoadMetric {

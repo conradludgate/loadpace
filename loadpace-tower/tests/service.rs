@@ -1,5 +1,6 @@
-use loadpace::{EndpointConfig, LatencyEstimatorConfig};
+use loadpace::{EndpointConfig, LatencyEstimatorConfig, ProbeSchedule};
 use loadpace_tower::AdaptiveEndpoint;
+use rand::SeedableRng;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -221,6 +222,29 @@ async fn endpoint_exposes_explicit_probe_controls() {
         snapshot.effective_concurrency,
         snapshot.target_concurrency + 1.0
     );
+}
+
+#[tokio::test(start_paused = true)]
+async fn endpoint_probe_checks_are_time_gated() {
+    let endpoint =
+        AdaptiveEndpoint::new_at(Echo, config(1, Duration::from_millis(10)), Instant::now());
+    let schedule = ProbeSchedule {
+        positive_probability: 1.0,
+        negative_probability: 0.0,
+        min_interval: Duration::from_secs(1),
+        max_interval: Duration::from_secs(1),
+        duration: Duration::from_millis(100),
+        ..ProbeSchedule::default()
+    };
+    let mut rng = rand::rngs::StdRng::seed_from_u64(7);
+
+    let first = endpoint
+        .maybe_start_probe(&schedule, &mut rng)
+        .expect("the first probe should start immediately");
+    assert_eq!(endpoint.maybe_start_probe(&schedule, &mut rng), Some(first));
+
+    tokio::time::advance(Duration::from_secs(1)).await;
+    assert!(endpoint.maybe_start_probe(&schedule, &mut rng).is_some());
 }
 
 #[tokio::test(start_paused = true)]

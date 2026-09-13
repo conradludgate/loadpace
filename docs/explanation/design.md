@@ -108,9 +108,12 @@ The asymmetry gives a small client a meaningful opportunity to grow while
 causing a dominant client to yield more absolute capacity. A probe does not
 permanently assign ownership; normal feedback decides what remains sustainable.
 
-`ProbeSchedule` accepts a caller-provided RNG. This makes production entropy
-and deterministic simulation equally possible. The current framework adapter
-exposes probe control but does not run a hidden background probe task.
+`ProbeSchedule` accepts a caller-provided RNG and schedules the next decision
+from a randomized time interval rather than from a probability per request.
+This keeps probe opportunities independent of request rate, while still
+making production entropy and deterministic simulation equally possible. The
+framework adapter exposes a caller-driven probe check but does not run a
+hidden background probe task.
 
 ## Discovery lifecycle
 

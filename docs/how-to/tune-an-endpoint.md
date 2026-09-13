@@ -74,7 +74,9 @@ controller.maybe_start_probe(&ProbeSchedule::default(), &mut rng, now);
 
 Treat probing as a temporary perturbation. It is useful for escaping unfair
 multi-client equilibria, but it should not be used as a permanent capacity
-assignment mechanism.
+assignment mechanism. Probe decisions are time-gated between the configured
+interval bounds, so calling the check more often does not increase the probe
+rate.
 
 ## Watch these metrics
 

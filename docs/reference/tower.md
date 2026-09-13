@@ -31,7 +31,9 @@ records a dispatched request as failed.
 
 `snapshot` returns controller metrics. `start_positive_probe` and
 `start_negative_probe` expose explicit probe control without exposing the
-adapter's internal mutable controller state.
+adapter's internal mutable controller state. `maybe_start_probe` provides a
+time-gated, caller-driven randomized probe check using an RNG supplied by the
+application.
 
 ## `LoadMetric`
 

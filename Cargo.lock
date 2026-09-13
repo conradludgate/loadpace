@@ -118,6 +118,7 @@ dependencies = [
  "futures-core",
  "futures-util",
  "loadpace",
+ "rand",
  "tokio",
  "tower",
 ]
