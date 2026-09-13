@@ -41,7 +41,7 @@ impl Gcra {
         self.tat.max(now)
     }
 
-    /// Changes the rate while preserving the current pacing debt.
+    /// Changes the rate while preserving the current pacing phase.
     ///
     /// # Panics
     ///
@@ -49,8 +49,11 @@ impl Gcra {
     /// to represent as a [`Duration`].
     pub fn set_rate(&mut self, rate_per_second: f64, now: Instant) {
         let interval = rate_to_interval(rate_per_second);
-        self.tat = self.next_at(now);
+        let phase =
+            self.tat.saturating_duration_since(now).as_secs_f64() / self.interval.as_secs_f64();
         self.interval = interval;
+        let remaining = Duration::from_secs_f64(phase * interval.as_secs_f64());
+        self.tat = saturating_add(now, remaining);
     }
 
     /// Commits a request that actually dispatched at `dispatched_at`.

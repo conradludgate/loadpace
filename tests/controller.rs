@@ -22,14 +22,25 @@ fn gcra_spaces_committed_dispatches_without_burst() {
 }
 
 #[test]
-fn gcra_rate_changes_preserve_pacing_debt() {
+fn gcra_rate_changes_preserve_pacing_phase() {
     let now = at_zero();
     let mut gcra = Gcra::new(2.0, now);
     gcra.commit(now);
 
     gcra.set_rate(10.0, now);
-    assert_eq!(gcra.next_at(now), now + Duration::from_millis(500));
+    assert_eq!(gcra.next_at(now), now + Duration::from_millis(100));
     assert_eq!(gcra.interval(), Duration::from_millis(100));
+}
+
+#[test]
+fn gcra_rate_changes_scale_remaining_phase() {
+    let now = at_zero();
+    let mut gcra = Gcra::new(2.0, now);
+    gcra.commit(now);
+
+    let changed_at = now + Duration::from_millis(100);
+    gcra.set_rate(10.0, changed_at);
+    assert_eq!(gcra.next_at(changed_at), now + Duration::from_millis(180));
 }
 
 #[test]
