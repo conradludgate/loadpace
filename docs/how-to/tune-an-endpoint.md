@@ -56,8 +56,10 @@ let config = EndpointConfig {
 rate = target concurrency / expected RTT
 ```
 
-Start by changing the initial value and bounds. Change `gain` only when the
-controller is clearly adapting too slowly or too aggressively in a simulator.
+Start by changing the initial value and bounds. Change `gain` or `smoothing`
+only when the controller is clearly adapting too slowly or too aggressively in
+a simulator. The controller deliberately does not increase from
+application-limited samples.
 
 ## Use probes carefully
 

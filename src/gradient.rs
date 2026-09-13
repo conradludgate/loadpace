@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-/// Parameters for the fractional Gradient2-style controller.
+/// Parameters for the fractional Gradient2 controller.
 #[derive(Clone, Debug)]
 pub struct Gradient2Config {
     /// Initial virtual concurrency.
@@ -9,10 +9,12 @@ pub struct Gradient2Config {
     pub min_concurrency: f64,
     /// Upper bound for the virtual concurrency.
     pub max_concurrency: f64,
-    /// Target RTT inflation tolerated before reducing the operating point.
+    /// RTT inflation tolerated before reducing the operating point.
     pub tolerance: f64,
-    /// Additive step applied to the fractional operating point.
+    /// Additive queue allowance used when latency is healthy.
     pub gain: f64,
+    /// Smoothing applied to each new operating-point estimate.
+    pub smoothing: f64,
     /// Multiplier used after a classified failure.
     pub failure_factor: f64,
 }
@@ -23,14 +25,15 @@ impl Default for Gradient2Config {
             initial_concurrency: 1.0,
             min_concurrency: 0.25,
             max_concurrency: 1024.0,
-            tolerance: 1.0,
+            tolerance: 1.5,
             gain: 0.1,
+            smoothing: 0.2,
             failure_factor: 0.7,
         }
     }
 }
 
-/// A continuous operating-point controller inspired by Gradient2.
+/// A fractional Gradient2 operating-point controller.
 ///
 /// Unlike an integer concurrency limiter, this controller deliberately keeps
 /// values such as `1.3`. The endpoint controller turns that value into a rate
@@ -65,6 +68,12 @@ impl Gradient2 {
             "Gradient2 tolerance must be finite and >= 1 and gain must be positive"
         );
         assert!(
+            config.smoothing.is_finite()
+                && (0.0..=1.0).contains(&config.smoothing)
+                && config.smoothing > 0.0,
+            "Gradient2 smoothing must be finite and in (0, 1]"
+        );
+        assert!(
             (0.0..=1.0).contains(&config.failure_factor) && config.failure_factor > 0.0,
             "failure factor must be in (0, 1]"
         );
@@ -77,24 +86,30 @@ impl Gradient2 {
         }
     }
 
-    /// Updates the operating point from an observed RTT and no-load baseline.
-    pub fn on_rtt(&mut self, rtt: Duration, baseline: Duration) {
-        let rtt = rtt.as_secs_f64().max(f64::MIN_POSITIVE);
-        let baseline = baseline.as_secs_f64().max(f64::MIN_POSITIVE);
-        // The tolerance is a headroom multiplier: a response at or below the
-        // baseline is an additive-increase opportunity, while an inflated RTT
-        // produces a multiplicative decrease proportional to the inflation.
-        let gradient = (baseline * self.config.tolerance / rtt).clamp(0.0, 4.0);
-        if gradient >= 1.0 {
-            self.concurrency += self.config.gain;
-        } else {
-            self.concurrency -= self.config.gain * (1.0 - gradient) * self.concurrency;
+    /// Updates the operating point from current and long-term RTT estimates.
+    ///
+    /// A sample from an application-limited caller is still useful for
+    /// diagnostics, but it must not increase the operating point: low demand
+    /// is not evidence that the endpoint has spare capacity.
+    pub fn on_rtt(&mut self, current_rtt: Duration, long_rtt: Duration, inflight: usize) -> bool {
+        let current_rtt = current_rtt.as_secs_f64().max(f64::MIN_POSITIVE);
+        let long_rtt = long_rtt.as_secs_f64().max(f64::MIN_POSITIVE);
+        let application_limited = (inflight as f64) < self.concurrency / 2.0;
+        if application_limited {
+            return false;
         }
-        self.concurrency = self
-            .concurrency
+
+        // Bound the gradient so a single outlier cannot halve the limit more
+        // than once, while a healthy sample can recover toward the current
+        // operating point.
+        let gradient = (self.config.tolerance * long_rtt / current_rtt).clamp(0.5, 1.0);
+        let estimate = self.concurrency * gradient + self.config.gain;
+        self.concurrency = (self.concurrency * (1.0 - self.config.smoothing)
+            + estimate * self.config.smoothing)
             .clamp(self.config.min_concurrency, self.config.max_concurrency);
         self.last_gradient = gradient;
         self.updates += 1;
+        true
     }
 
     /// Reduces the operating point after an outcome classified as unhealthy.

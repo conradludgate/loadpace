@@ -315,14 +315,13 @@ impl EndpointController {
         }
 
         debug_assert_eq!(self.inflight, self.active_requests.len() + 1);
-        self.inflight -= 1;
         self.completed += 1;
 
         match outcome {
             Outcome::Success => {
                 self.latency.observe(latency);
                 self.gradient
-                    .on_rtt(self.latency.expected_rtt(), self.latency.baseline());
+                    .on_rtt(self.latency.short(), self.latency.long(), self.inflight);
             }
             Outcome::Failure => {
                 self.failures += 1;
@@ -330,6 +329,7 @@ impl EndpointController {
             }
         }
 
+        self.inflight -= 1;
         self.update_rate(now);
         true
     }

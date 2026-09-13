@@ -14,7 +14,7 @@ separately; see the [Tower adapter reference](tower.md).
 | `queue_capacity` | `4` | Accepted but not-yet-dispatched requests per endpoint |
 | `max_inflight` | `1024` | Emergency cap on actually dispatched requests |
 | `latency` | `LatencyEstimatorConfig::default()` | RTT estimator parameters |
-| `gradient` | `Gradient2Config::default()` | Fractional operating-point parameters |
+| `gradient` | `Gradient2Config::default()` | Fractional Gradient2 operating-point parameters |
 
 The builder-style methods `.queue_capacity(value)` and
 `.max_inflight(value)` cover the two most common settings.

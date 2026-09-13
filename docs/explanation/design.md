@@ -34,9 +34,12 @@ GCRA then spaces requests at that rate. Over time, the endpoint can average
 around 1.3 concurrent requests even though instantaneous request counts are
 integers.
 
-The current `Gradient2` type is a small continuous Gradient2-style controller,
-with intentionally conservative defaults. Its constants and exact update rule
-are still candidates for simulation-driven tuning.
+`Gradient2` compares a current RTT estimate with a long-term EWMA, bounds the
+gradient against latency outliers, and smooths the resulting fractional
+operating point. It does not grow the operating point from application-limited
+samples, because low demand is not evidence of spare endpoint capacity. Its
+constants and exact workload behavior remain candidates for simulation-driven
+tuning.
 
 ## GCRA is the normal actuator
 

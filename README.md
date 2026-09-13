@@ -103,7 +103,7 @@ The `loadpace` crate's `EndpointController` is the runtime-independent core.
 It combines:
 
 - a smoothed endpoint RTT estimate;
-- a continuous Gradient2-style operating point;
+- a fractional Gradient2 operating point;
 - Little's Law to derive a request rate;
 - GCRA pacing and virtual queue prediction;
 - temporary additive positive and multiplicative negative probes;
