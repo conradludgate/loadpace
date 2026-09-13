@@ -181,7 +181,7 @@ impl EndpointController {
     }
 
     pub fn may_schedule(&self) -> bool {
-        self.queued + self.inflight < self.config.queue_capacity
+        self.queued < self.config.queue_capacity
     }
 
     /// Reserves one bounded scheduling slot and appends it to the virtual
@@ -381,4 +381,3 @@ impl EndpointController {
         }
     }
 }
-
