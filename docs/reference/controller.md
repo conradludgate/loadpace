@@ -58,3 +58,12 @@ sample.
 The snapshot includes RTT estimates, target/effective concurrency, derived
 rates, committed and virtual TAT, queue and inflight depth, completion/failure
 counters, sample count, and active probe state.
+
+## `ProbeSchedule`
+
+`ProbeSchedule` describes caller-driven randomized probes. The positive and
+negative probabilities choose the probe kind at each scheduled decision; the
+remaining probability performs no probe. `min_interval` and `max_interval`
+bound the time until the next decision, so checking the schedule more often
+does not increase probe frequency. The default intervals are one to five
+seconds, and the default duration is one second.

@@ -118,7 +118,8 @@ The separate `loadpace-tower` crate provides:
 - compatibility with Tower's `p2c::Balance`.
 
 The public `simulate` function in `loadpace` provides a deterministic
-fixed-service-time simulator for comparing controller changes.
+worker-pool simulator for comparing controller changes and endpoint
+saturation.
 
 ## Backpressure guarantee
 
@@ -141,7 +142,8 @@ The repository includes tests for:
 - bounded queue admission and response cancellation;
 - concurrent inner responses;
 - dynamic discovery and Tower P2C integration;
-- deterministic simulation and unequal endpoint latency.
+- deterministic simulation, worker-pool saturation, and unequal endpoint latency;
+- seeded multi-client fairness and server-capacity churn scenarios.
 
 Run the full suite with:
 
@@ -153,7 +155,7 @@ cargo test --workspace --all-features --all-targets
 
 The first implementation covers the deterministic controller, simulator, and
 Tower adapter with dynamic discovery and P2C integration. Hyper and Rama
-adapters are intentionally separate future crates. Automatic probe scheduling,
+adapters are intentionally separate future crates. Background probe driving,
 failure classification beyond adapter-level errors, richer transport-readiness
 prediction, and production tuning remain active design areas. See [How Loadpace
 controls and routes work](docs/explanation/design.md) for the current
