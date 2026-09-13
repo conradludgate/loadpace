@@ -217,10 +217,7 @@ fn next_dispatch_at(endpoint: &mut EndpointRuntime, now: Instant) -> Option<Inst
 fn drive_all(endpoints: &mut [EndpointRuntime], completions: &mut Vec<Completion>, now: Instant) {
     for (index, endpoint) in endpoints.iter_mut().enumerate() {
         endpoint.controller.refresh(now);
-        loop {
-            let Some(reservation) = endpoint.pending.front().copied() else {
-                break;
-            };
+        while let Some(reservation) = endpoint.pending.front().copied() {
             match endpoint.controller.dispatch_state(reservation, now) {
                 DispatchState::Ready => {
                     endpoint.pending.pop_front();

@@ -29,7 +29,10 @@ impl ProbeState {
     }
 
     pub fn start_positive(&mut self, delta: f64, until: Instant) {
-        assert!(delta.is_finite() && delta > 0.0, "positive probe delta must be positive");
+        assert!(
+            delta.is_finite() && delta > 0.0,
+            "positive probe delta must be positive"
+        );
         self.active = Some(Probe {
             kind: ProbeKind::Positive { delta },
             until,
@@ -104,7 +107,7 @@ impl ProbeSchedule {
         }
 
         let draw = rng.gen::<f64>();
-        let probe = if draw < self.positive_probability {
+        if draw < self.positive_probability {
             state.start_positive(self.positive_delta, now + self.duration);
             state.current()
         } else if draw < self.positive_probability + self.negative_probability {
@@ -112,9 +115,6 @@ impl ProbeSchedule {
             state.current()
         } else {
             None
-        };
-
-        probe
+        }
     }
 }
-
