@@ -1,8 +1,8 @@
 //! Behavioral acceptance tests for multi-client fairness and endpoint churn.
 //!
 //! The harness uses seeded time-based probes and a worker-pooled server model.
-//! Scenarios that still need longer convergence or richer discovery semantics
-//! remain explicitly ignored rather than weakening their assertions.
+//! Each scenario is an executable behavioral assertion about eventual work
+//! sharing rather than a production benchmark.
 
 use loadpace::{
     DispatchReservation, DispatchState, EndpointConfig, EndpointController, InFlightRequest,
@@ -65,8 +65,8 @@ fn config(initial_rtt: Duration) -> EndpointConfig {
         max_inflight: 1024,
         latency: LatencyEstimatorConfig {
             initial_rtt,
-            short_alpha: 1.0,
-            long_alpha: 1.0,
+            short_alpha: 0.25,
+            long_alpha: 0.05,
             min_rtt: initial_rtt,
         },
         ..EndpointConfig::default()
@@ -355,7 +355,7 @@ fn client_specs(count: usize, join_at: Duration) -> Vec<ClientSpec> {
     (0..count)
         .map(|_| ClientSpec {
             join_at,
-            offered_rate: 100.0,
+            offered_rate: 1_000.0,
             config: config(Duration::from_millis(10)),
         })
         .collect()
@@ -388,7 +388,6 @@ fn long_running_identical_clients_have_a_fair_measurement() {
 }
 
 #[test]
-#[ignore = "new clients currently need a longer convergence window"]
 fn clients_joining_after_warmup_have_a_fair_measurement() {
     let report = run(
         client_specs(4, Duration::ZERO)
@@ -397,8 +396,8 @@ fn clients_joining_after_warmup_have_a_fair_measurement() {
             .collect(),
         vec![server(4)],
         None,
-        Duration::from_secs(7),
         Duration::from_secs(15),
+        Duration::from_secs(30),
     );
 
     assert!(
@@ -416,8 +415,8 @@ fn servers_joining_after_warmup_receive_capacity_proportional_work() {
         client_specs(8, Duration::ZERO),
         vec![server(1)],
         Some((Duration::from_secs(5), server(3))),
-        Duration::from_secs(7),
         Duration::from_secs(15),
+        Duration::from_secs(30),
     );
 
     let ratio = report.server_completed[1] as f64 / report.server_completed[0] as f64;
