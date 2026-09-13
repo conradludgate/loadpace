@@ -3,21 +3,13 @@ use std::time::{Duration, Instant};
 /// A single-rate, spacing-oriented GCRA pacer.
 ///
 /// `tat` is the theoretical arrival time of the next request admitted by the
-/// pacer. This is the useful form of GCRA for Loadpace: it gives callers both
-/// a dispatch deadline and a cheap virtual queue-tail prediction.
+/// pacer. This is the useful form of GCRA for Loadpace: it gives callers a
+/// dispatch deadline and a cheap virtual queue-tail prediction without adding
+/// burst capacity.
 #[derive(Clone, Debug)]
 pub struct Gcra {
     interval: Duration,
     tat: Instant,
-}
-
-/// The result of reserving one slot in a [`Gcra`].
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct GcraReservation {
-    /// When the reserved request may be sent.
-    pub scheduled_at: Instant,
-    /// The TAT after this reservation. Kept public for diagnostics.
-    pub next_tat: Instant,
 }
 
 impl Gcra {
@@ -53,33 +45,6 @@ impl Gcra {
         self.tat.max(now)
     }
 
-    /// Reserves one pacing slot.
-    pub fn reserve(&mut self, now: Instant) -> GcraReservation {
-        let scheduled_at = self.next_at(now);
-        let next_tat = saturating_add(scheduled_at, self.interval);
-        self.tat = next_tat;
-
-        GcraReservation {
-            scheduled_at,
-            next_tat,
-        }
-    }
-
-    /// Cancels the most recently reserved slot.
-    ///
-    /// GCRA reservations are normally committed in order. An earlier
-    /// reservation cannot be removed safely without rebuilding the virtual
-    /// queue, which is why the higher-level endpoint controller owns that
-    /// operation.
-    pub fn cancel_last(&mut self, reservation: GcraReservation) -> bool {
-        if self.tat == reservation.next_tat {
-            self.tat = reservation.scheduled_at;
-            true
-        } else {
-            false
-        }
-    }
-
     /// Changes the rate while preserving the current pacing debt.
     pub fn set_rate(&mut self, rate_per_second: f64, now: Instant) {
         assert!(
@@ -96,7 +61,8 @@ impl Gcra {
     /// If the transport was not ready at the predicted time, the missed time
     /// is reflected as pacing debt. This prevents a burst after a readiness
     /// stall while allowing the endpoint controller to keep its virtual queue
-    /// separate from actual dispatch.
+    /// separate from actual dispatch. Speculative queue reservations belong to
+    /// the higher-level endpoint controller and must not be committed here.
     pub fn commit(&mut self, dispatched_at: Instant) {
         let base = self.next_at(dispatched_at);
         self.tat = saturating_add(base, self.interval);

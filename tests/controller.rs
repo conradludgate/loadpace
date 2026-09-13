@@ -10,28 +10,22 @@ fn at_zero() -> Instant {
 }
 
 #[test]
-fn gcra_spaces_reservations_and_can_cancel_the_tail() {
+fn gcra_spaces_committed_dispatches_without_burst() {
     let now = at_zero();
     let mut gcra = Gcra::new(10.0, now);
 
-    let first = gcra.reserve(now);
-    let second = gcra.reserve(now);
-
-    assert_eq!(first.scheduled_at, now);
-    assert_eq!(second.scheduled_at, now + Duration::from_millis(100));
-    assert_eq!(gcra.next_at(now), now + Duration::from_millis(200));
-    assert!(gcra.cancel_last(second));
-    assert_eq!(gcra.next_at(now), now + Duration::from_millis(100));
-    assert!(gcra.cancel_last(first));
     assert_eq!(gcra.next_at(now), now);
+    gcra.commit(now);
+    assert_eq!(gcra.next_at(now), now + Duration::from_millis(100));
+    gcra.commit(now + Duration::from_millis(100));
+    assert_eq!(gcra.next_at(now), now + Duration::from_millis(200));
 }
 
 #[test]
 fn gcra_rate_changes_preserve_pacing_debt() {
     let now = at_zero();
     let mut gcra = Gcra::new(2.0, now);
-    let first = gcra.reserve(now);
-    assert_eq!(first.scheduled_at, now);
+    gcra.commit(now);
 
     gcra.set_rate(10.0, now);
     assert_eq!(gcra.next_at(now), now + Duration::from_millis(500));

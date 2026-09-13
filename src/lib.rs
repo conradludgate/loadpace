@@ -14,7 +14,7 @@ pub use controller::{
     ControllerSnapshot, DispatchReservation, DispatchState, EndpointConfig, EndpointController,
     InFlightRequest, Outcome,
 };
-pub use gcra::{Gcra, GcraReservation};
+pub use gcra::Gcra;
 pub use gradient::{Gradient2, Gradient2Config};
 pub use latency::{LatencyEstimator, LatencyEstimatorConfig};
 pub use probe::{Probe, ProbeKind, ProbeSchedule, ProbeState};
