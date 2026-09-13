@@ -1,0 +1,26 @@
+[package]
+name = "loadpace"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+description = "Adaptive client-side load balancing and backpressure for Tower services"
+license = "MIT OR Apache-2.0"
+readme = "README.md"
+repository = "https://github.com/conradludgate/loadpace"
+keywords = ["load-balancing", "backpressure", "tower", "congestion-control"]
+categories = ["network-programming", "asynchronous"]
+
+[features]
+default = ["tower"]
+tower = ["dep:tower", "dep:tokio"]
+
+[dependencies]
+rand = "0.8"
+tower = { version = "0.5", optional = true, features = ["balance"] }
+tokio = { version = "1", optional = true, features = ["sync", "time"] }
+
+[dev-dependencies]
+futures-util = "0.3"
+tower = { version = "0.5", features = ["balance", "util"] }
+tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "sync", "time", "test-util"] }
+
