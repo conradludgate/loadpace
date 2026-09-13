@@ -232,3 +232,37 @@ async fn dropping_a_queued_response_releases_its_slot() {
         Poll::Ready(Ok(()))
     ));
 }
+
+#[tokio::test(start_paused = true)]
+async fn readiness_capacity_is_shared_across_clones() {
+    let mut first =
+        AdaptiveEndpoint::new_at(Echo, config(1, Duration::from_secs(1)), Instant::now());
+    let mut second = first.clone();
+
+    assert!(matches!(
+        Service::poll_ready(
+            &mut first,
+            &mut Context::from_waker(futures_util::task::noop_waker_ref())
+        ),
+        Poll::Ready(Ok(()))
+    ));
+    assert!(matches!(
+        Service::poll_ready(
+            &mut second,
+            &mut Context::from_waker(futures_util::task::noop_waker_ref())
+        ),
+        Poll::Pending
+    ));
+
+    // Dropping a readiness reservation returns the same permit that wakes
+    // other clones, without requiring a shared list of task wakers.
+    drop(first);
+
+    assert!(matches!(
+        Service::poll_ready(
+            &mut second,
+            &mut Context::from_waker(futures_util::task::noop_waker_ref())
+        ),
+        Poll::Ready(Ok(()))
+    ));
+}

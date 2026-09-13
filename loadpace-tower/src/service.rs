@@ -7,7 +7,7 @@ use std::future::Future;
 use std::marker::PhantomData;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
-use std::task::{Context, Poll, Waker};
+use std::task::{Context, Poll};
 use std::time::Instant;
 use tower::Service;
 use tower::discover::Change;
@@ -26,39 +26,20 @@ impl LoadMetric {
     }
 }
 
-#[derive(Debug, Default)]
-struct ReadyWaker {
-    wakers: Mutex<Vec<Waker>>,
-}
-
-impl ReadyWaker {
-    fn register(&self, waker: &Waker) {
-        let mut wakers = self.wakers.lock().expect("ready waker mutex poisoned");
-        if !wakers.iter().any(|existing| existing.will_wake(waker)) {
-            wakers.push(waker.clone());
-        }
-    }
-
-    fn wake(&self) {
-        let wakers = self
-            .wakers
-            .lock()
-            .expect("ready waker mutex poisoned")
-            .drain(..)
-            .collect::<Vec<_>>();
-        for waker in wakers {
-            waker.wake();
-        }
-    }
-}
-
 struct Shared<S> {
     inner: tokio::sync::Mutex<S>,
     controller: Mutex<EndpointController>,
-    readiness_reservations: Mutex<usize>,
-    ready: ReadyWaker,
+    ready: Arc<tokio::sync::Semaphore>,
     dispatch: tokio::sync::Notify,
 }
+
+type ReadinessFuture = Pin<
+    Box<
+        dyn Future<Output = Result<tokio::sync::OwnedSemaphorePermit, tokio::sync::AcquireError>>
+            + Send
+            + 'static,
+    >,
+>;
 
 /// A Tower service with per-endpoint adaptive pacing and bounded admission.
 ///
@@ -69,7 +50,8 @@ struct Shared<S> {
 /// never contaminates the RTT sample.
 pub struct AdaptiveEndpoint<S> {
     shared: Arc<Shared<S>>,
-    readiness_reserved: bool,
+    readiness_permit: Option<tokio::sync::OwnedSemaphorePermit>,
+    readiness: Option<ReadinessFuture>,
 }
 
 impl<S> AdaptiveEndpoint<S> {
@@ -78,15 +60,16 @@ impl<S> AdaptiveEndpoint<S> {
     }
 
     pub fn new_at(inner: S, config: EndpointConfig, now: Instant) -> Self {
+        let queue_capacity = config.queue_capacity;
         Self {
             shared: Arc::new(Shared {
                 inner: tokio::sync::Mutex::new(inner),
                 controller: Mutex::new(EndpointController::new(config, now)),
-                readiness_reservations: Mutex::new(0),
-                ready: ReadyWaker::default(),
+                ready: Arc::new(tokio::sync::Semaphore::new(queue_capacity)),
                 dispatch: tokio::sync::Notify::new(),
             }),
-            readiness_reserved: false,
+            readiness_permit: None,
+            readiness: None,
         }
     }
 
@@ -171,21 +154,8 @@ impl<S> Clone for AdaptiveEndpoint<S> {
     fn clone(&self) -> Self {
         Self {
             shared: Arc::clone(&self.shared),
-            readiness_reserved: false,
-        }
-    }
-}
-
-impl<S> Drop for AdaptiveEndpoint<S> {
-    fn drop(&mut self) {
-        if self.readiness_reserved {
-            let mut reservations = self
-                .shared
-                .readiness_reservations
-                .lock()
-                .expect("readiness mutex poisoned");
-            *reservations -= 1;
-            self.shared.ready.wake();
+            readiness_permit: None,
+            readiness: None,
         }
     }
 }
@@ -211,52 +181,53 @@ where
     type Future = ResponseFuture<S::Response, S::Error>;
 
     fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        if self.readiness_reserved {
+        if self.readiness_permit.is_some() {
             return Poll::Ready(Ok(()));
         }
 
-        self.shared.ready.register(cx.waker());
-
-        // Recheck after registering to avoid missing a completion/cancellation
-        // that raced with the first check.
-        let available = {
-            let mut reservations = self
-                .shared
-                .readiness_reservations
-                .lock()
-                .expect("readiness mutex poisoned");
-            let mut controller = self
-                .shared
-                .controller
-                .lock()
-                .expect("controller mutex poisoned");
-            controller.refresh(Instant::now());
-            let available =
-                *reservations + controller.queued() < controller.config().queue_capacity;
-            if available {
-                *reservations += 1;
+        if self.readiness.is_none() {
+            match Arc::clone(&self.shared.ready).try_acquire_owned() {
+                Ok(permit) => {
+                    self.readiness_permit = Some(permit);
+                    return Poll::Ready(Ok(()));
+                }
+                Err(tokio::sync::TryAcquireError::NoPermits) => {
+                    self.readiness = Some(Box::pin(Arc::clone(&self.shared.ready).acquire_owned()));
+                }
+                Err(tokio::sync::TryAcquireError::Closed) => {
+                    panic!("AdaptiveEndpoint readiness semaphore was closed")
+                }
             }
-            available
-        };
-        if available {
-            self.readiness_reserved = true;
-            Poll::Ready(Ok(()))
-        } else {
-            Poll::Pending
+        }
+
+        match self
+            .readiness
+            .as_mut()
+            .expect("readiness future must exist")
+            .as_mut()
+            .poll(cx)
+        {
+            Poll::Ready(Ok(permit)) => {
+                self.readiness = None;
+                self.readiness_permit = Some(permit);
+                Poll::Ready(Ok(()))
+            }
+            Poll::Ready(Err(_)) => {
+                panic!("AdaptiveEndpoint readiness semaphore was closed")
+            }
+            Poll::Pending => Poll::Pending,
         }
     }
 
     fn call(&mut self, request: Request) -> Self::Future {
         assert!(
-            self.readiness_reserved,
+            self.readiness_permit.is_some(),
             "AdaptiveEndpoint::call invoked without available readiness"
         );
-        self.readiness_reserved = false;
-        *self
-            .shared
-            .readiness_reservations
-            .lock()
-            .expect("readiness mutex poisoned") -= 1;
+        let readiness_permit = self
+            .readiness_permit
+            .take()
+            .expect("readiness permit must exist after poll_ready");
         let reservation = self
             .shared
             .controller
@@ -265,7 +236,7 @@ where
             .reserve(Instant::now())
             .expect("readiness reservation was not reflected in controller capacity");
 
-        let guard = RequestGuard::new(Arc::clone(&self.shared), reservation);
+        let guard = RequestGuard::new(Arc::clone(&self.shared), reservation, readiness_permit);
         let future = dispatch_request(Arc::clone(&self.shared), request, guard);
         ResponseFuture {
             inner: Box::pin(future),
@@ -291,15 +262,21 @@ impl<T, E> Future for ResponseFuture<T, E> {
 struct RequestGuard<S> {
     shared: Arc<Shared<S>>,
     reservation: Option<DispatchReservation>,
+    readiness_permit: Option<tokio::sync::OwnedSemaphorePermit>,
     active: Option<InFlightRequest>,
     finished: bool,
 }
 
 impl<S> RequestGuard<S> {
-    fn new(shared: Arc<Shared<S>>, reservation: DispatchReservation) -> Self {
+    fn new(
+        shared: Arc<Shared<S>>,
+        reservation: DispatchReservation,
+        readiness_permit: tokio::sync::OwnedSemaphorePermit,
+    ) -> Self {
         Self {
             shared,
             reservation: Some(reservation),
+            readiness_permit: Some(readiness_permit),
             active: None,
             finished: false,
         }
@@ -308,6 +285,9 @@ impl<S> RequestGuard<S> {
     fn mark_dispatched(&mut self, active: InFlightRequest) {
         self.reservation = None;
         self.active = Some(active);
+        // The controller has removed the request from its virtual queue, so
+        // releasing this permit cannot expose more work than the queue allows.
+        self.readiness_permit = None;
     }
 
     fn finish(&mut self, outcome: Outcome, now: Instant) {
@@ -329,8 +309,10 @@ impl<S> RequestGuard<S> {
                 .expect("controller mutex poisoned")
                 .cancel(reservation, now);
         }
+        // Release capacity only after the controller has been updated. A
+        // newly woken caller must observe the cancellation/completion first.
+        self.readiness_permit = None;
         self.shared.dispatch.notify_waiters();
-        self.shared.ready.wake();
     }
 }
 
