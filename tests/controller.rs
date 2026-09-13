@@ -33,6 +33,12 @@ fn gcra_rate_changes_preserve_pacing_debt() {
 }
 
 #[test]
+#[should_panic(expected = "GCRA rate is too low")]
+fn gcra_rejects_an_unrepresentable_interval() {
+    Gcra::new(1e-30, at_zero());
+}
+
+#[test]
 fn latency_estimator_keeps_short_and_long_views() {
     let mut estimator = LatencyEstimator::new(LatencyEstimatorConfig {
         initial_rtt: Duration::from_millis(100),

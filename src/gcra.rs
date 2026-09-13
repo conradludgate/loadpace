@@ -17,13 +17,9 @@ impl Gcra {
     ///
     /// # Panics
     ///
-    /// Panics when `rate_per_second` is not finite and strictly positive.
+    /// Panics when `rate_per_second` is not finite and strictly positive, or
+    /// when its interval is too large to represent as a [`Duration`].
     pub fn new(rate_per_second: f64, now: Instant) -> Self {
-        assert!(
-            rate_per_second.is_finite() && rate_per_second > 0.0,
-            "GCRA rate must be finite and positive"
-        );
-
         Self {
             interval: rate_to_interval(rate_per_second),
             tat: now,
@@ -46,14 +42,15 @@ impl Gcra {
     }
 
     /// Changes the rate while preserving the current pacing debt.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `rate_per_second` is invalid or its interval is too large
+    /// to represent as a [`Duration`].
     pub fn set_rate(&mut self, rate_per_second: f64, now: Instant) {
-        assert!(
-            rate_per_second.is_finite() && rate_per_second > 0.0,
-            "GCRA rate must be finite and positive"
-        );
-
+        let interval = rate_to_interval(rate_per_second);
         self.tat = self.next_at(now);
-        self.interval = rate_to_interval(rate_per_second);
+        self.interval = interval;
     }
 
     /// Commits a request that actually dispatched at `dispatched_at`.
@@ -75,13 +72,25 @@ impl Gcra {
 }
 
 fn rate_to_interval(rate_per_second: f64) -> Duration {
+    assert!(
+        rate_per_second.is_finite() && rate_per_second > 0.0,
+        "GCRA rate must be finite and positive"
+    );
+
     // Duration::from_secs_f64 panics for values it cannot represent. Clamp the
     // interval to nanosecond precision: below that point a timer cannot make
     // a more useful distinction anyway.
-    let seconds = (1.0 / rate_per_second).max(1e-9);
+    let seconds = 1.0 / rate_per_second;
+    assert!(
+        seconds.is_finite() && seconds <= Duration::MAX.as_secs_f64(),
+        "GCRA rate is too low to represent as a Duration"
+    );
+    let seconds = seconds.max(1e-9);
     Duration::from_secs_f64(seconds)
 }
 
 pub(crate) fn saturating_add(instant: Instant, duration: Duration) -> Instant {
-    instant.checked_add(duration).unwrap_or(instant)
+    instant
+        .checked_add(duration)
+        .expect("GCRA schedule overflowed Instant")
 }
