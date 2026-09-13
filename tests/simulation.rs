@@ -21,6 +21,7 @@ fn endpoint(queue_capacity: usize, service_time: Duration) -> SimulatedEndpoint 
                 ..Gradient2Config::default()
             },
         },
+        workers: 1,
         service_time,
     }
 }
@@ -54,4 +55,22 @@ fn simulator_uses_predicted_cost_to_shift_work_to_a_faster_endpoint() {
 
     assert!(report.endpoints[0].dispatched > report.endpoints[1].dispatched);
     assert!(report.endpoints[0].snapshot.expected_rtt < report.endpoints[1].snapshot.expected_rtt);
+}
+
+#[test]
+fn simulator_models_worker_capacity_and_queueing_latency() {
+    let report = simulate(SimulationConfig {
+        duration: Duration::from_secs(2),
+        offered_rate: 500.0,
+        endpoints: vec![SimulatedEndpoint {
+            config: EndpointConfig::default().queue_capacity(4),
+            workers: 2,
+            service_time: Duration::from_millis(10),
+        }],
+        seed: 11,
+    });
+
+    assert!(report.completed > 100);
+    assert!(report.endpoints[0].snapshot.expected_rtt > Duration::from_millis(10));
+    assert!(report.max_queued <= 4);
 }

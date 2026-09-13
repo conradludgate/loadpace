@@ -2,8 +2,8 @@
 //!
 //! The simulator is deliberately kept in the library so algorithm changes can
 //! be compared against the same scenarios in unit and integration tests. It is
-//! not intended to model a particular protocol or network; service time is the
-//! only endpoint-specific model in this first version.
+//! not intended to model a particular protocol or network; endpoints use a
+//! fixed service time and a configurable worker pool to expose saturation.
 
 use crate::{
     DispatchReservation, DispatchState, EndpointConfig, EndpointController, InFlightRequest,
@@ -18,6 +18,9 @@ use std::time::{Duration, Instant};
 #[derive(Clone, Debug)]
 pub struct SimulatedEndpoint {
     pub config: EndpointConfig,
+    /// Number of parallel workers available at the endpoint.
+    pub workers: usize,
+    /// Time spent by one worker processing a request.
     pub service_time: Duration,
 }
 
@@ -37,6 +40,7 @@ impl Default for SimulationConfig {
             offered_rate: 1.0,
             endpoints: vec![SimulatedEndpoint {
                 config: EndpointConfig::default(),
+                workers: 1,
                 service_time: Duration::from_millis(50),
             }],
             seed: 1,
@@ -68,6 +72,7 @@ struct EndpointRuntime {
     controller: EndpointController,
     pending: VecDeque<DispatchReservation>,
     service_time: Duration,
+    available_at: Vec<Instant>,
     dispatched: u64,
     completed: u64,
 }
@@ -99,6 +104,14 @@ pub fn simulate(config: SimulationConfig) -> SimulationReport {
         .endpoints
         .into_iter()
         .map(|endpoint| EndpointRuntime {
+            available_at: {
+                assert!(endpoint.workers > 0, "a simulated endpoint needs a worker");
+                assert!(
+                    !endpoint.service_time.is_zero(),
+                    "a simulated endpoint needs a positive service time"
+                );
+                vec![start; endpoint.workers]
+            },
             controller: EndpointController::new(endpoint.config, start),
             pending: VecDeque::new(),
             service_time: endpoint.service_time,
@@ -225,9 +238,21 @@ fn drive_all(endpoints: &mut [EndpointRuntime], completions: &mut Vec<Completion
                         .controller
                         .on_dispatched(reservation, now)
                         .expect("dispatch state changed unexpectedly");
+                    let worker = endpoint
+                        .available_at
+                        .iter()
+                        .enumerate()
+                        .min_by_key(|(_, available_at)| **available_at)
+                        .expect("simulated endpoint must have a worker")
+                        .0;
+                    let completion_at = endpoint.available_at[worker]
+                        .max(now)
+                        .checked_add(endpoint.service_time)
+                        .expect("simulation completion schedule overflowed Instant");
+                    endpoint.available_at[worker] = completion_at;
                     endpoint.dispatched += 1;
                     completions.push(Completion {
-                        at: now + endpoint.service_time,
+                        at: completion_at,
                         endpoint: index,
                         request: active,
                     });
@@ -254,12 +279,12 @@ fn complete_ready(
     for completion in completions.drain(..) {
         if completion.at <= now {
             let endpoint = &mut endpoints[completion.endpoint];
-            endpoint.controller.on_complete(
-                completion.request,
-                Outcome::Success,
-                endpoint.service_time,
-                now,
-            );
+            let latency = completion
+                .at
+                .saturating_duration_since(completion.request.dispatched_at());
+            endpoint
+                .controller
+                .on_complete(completion.request, Outcome::Success, latency, now);
             endpoint.completed += 1;
         } else {
             remaining.push(completion);
