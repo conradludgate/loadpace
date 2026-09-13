@@ -1,8 +1,9 @@
 use crate::gcra::{saturating_add, Gcra};
 use crate::gradient::{Gradient2, Gradient2Config};
 use crate::latency::{LatencyEstimator, LatencyEstimatorConfig};
-use crate::probe::{Probe, ProbeState};
+use crate::probe::{Probe, ProbeSchedule, ProbeState};
 use crate::ScheduleError;
+use rand::Rng;
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
@@ -326,6 +327,20 @@ impl EndpointController {
     pub fn start_negative_probe(&mut self, factor: f64, until: Instant, now: Instant) {
         self.probe.start_negative(factor, until);
         self.update_rate(now);
+    }
+
+    /// Gives a seeded or production RNG a chance to start a temporary probe.
+    pub fn maybe_start_probe<R: Rng + ?Sized>(
+        &mut self,
+        schedule: &ProbeSchedule,
+        rng: &mut R,
+        now: Instant,
+    ) -> Option<Probe> {
+        let probe = schedule.maybe_start(&mut self.probe, rng, now);
+        if probe.is_some() {
+            self.update_rate(now);
+        }
+        probe
     }
 
     /// Expires a probe, if necessary, and updates the pacer to the base rate.

@@ -18,9 +18,19 @@ tower = ["dep:futures-core", "dep:tower", "dep:tokio"]
 rand = "0.8"
 futures-core = { version = "0.3", optional = true }
 tower = { version = "0.5", optional = true, features = ["balance", "discover"] }
-tokio = { version = "1", optional = true, features = ["sync", "time"] }
+tokio = { version = "1", optional = true, features = ["macros", "sync", "time"] }
 
 [dev-dependencies]
 futures-util = "0.3"
 tower = { version = "0.5", features = ["balance", "discover", "util"] }
 tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "sync", "time", "test-util"] }
+
+[[test]]
+name = "discovery"
+path = "tests/discovery.rs"
+required-features = ["tower"]
+
+[[test]]
+name = "service"
+path = "tests/service.rs"
+required-features = ["tower"]

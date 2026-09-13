@@ -750,43 +750,66 @@ Correctness and control behavior should come before micro-optimizing synchroniza
 
 ---
 
-## Public API sketch
+## Public API
 
-The exact API is not decided, but the library should aim for something small.
-
-For example:
+The lower-level controller is usable without Tower:
 
 ```rust
-let service = Loadpace::builder()
-    .queue_capacity(4)
-    .discovery(discovery)
-    .build();
-```
+let mut controller = EndpointController::new(config, now);
+let reservation = controller.reserve(now)?;
 
-or, if discovery already yields Tower services:
-
-```rust
-let discovery = discovery.map_service(|svc| {
-    AdaptiveEndpoint::new(svc, endpoint_config.clone())
-});
-
-let client = tower::balance::p2c::Balance::new(discovery);
-```
-
-The lower-level controller should ideally also be usable without Tower:
-
-```rust
-let estimate = controller.load(now);
-
-if controller.may_schedule() {
-    let reservation = controller.schedule(now);
+if controller.dispatch_state(reservation, now) == DispatchState::Ready {
+    let request = controller.on_dispatched(reservation, now).unwrap();
+    controller.on_complete(request, Outcome::Success, latency, now);
 }
+```
 
-controller.on_dispatched(&reservation, now);
-controller.on_complete(&reservation, outcome, latency);
+The Tower integration wraps a discovered service directly:
+
+```rust
+let endpoint = AdaptiveEndpoint::new(service, EndpointConfig::default());
 ```
 
 This keeps the algorithms testable and reusable while Tower remains the primary integration.
+
+## Current crate implementation
+
+The repository now contains a usable first implementation of this design.
+
+`EndpointController` is the deterministic core. It owns the latency estimator,
+continuous Gradient2-style operating point, Little's Law rate conversion,
+GCRA state, temporary probes, failure counters, and bounded virtual queue. It
+can be driven without an async runtime, which makes control behavior easy to
+test and simulate.
+
+The optional `tower` feature provides `AdaptiveEndpoint<S>`. It implements
+`tower::Service` and `tower::load::Load`: `poll_ready` reserves a bounded
+readiness slot, `call` reserves a virtual pacing slot, and the returned future
+waits for GCRA and inner-service readiness before recording actual dispatch.
+Dropping that future cancels the virtual reservation or records a dispatched
+request as failed, so stuck work cannot leak controller capacity.
+
+For dynamic discovery, wrap a stream yielding Tower `Change` values and pass
+it to Tower's existing P2C balancer:
+
+```rust
+use loadpace::{AdaptiveDiscovery, EndpointConfig};
+use tower::balance::p2c::Balance;
+
+let adaptive = AdaptiveDiscovery::<_, Request>::new(discovery, EndpointConfig::default());
+let client = Balance::new(adaptive);
+```
+
+The discovery wrapper creates fresh controller state for each insertion and
+preserves removal events. Tower's balancer then performs P2C over each
+endpoint's predicted completion cost (`virtual queue tail + expected RTT`).
+
+The `simulate` function is a deterministic event-driven fixed-service-time
+simulator. It is intentionally part of the public crate so changes to pacing,
+backpressure, or endpoint selection can be compared against repeatable
+scenarios. The integration tests cover the single-endpoint backpressure case,
+unequal endpoint latencies, cancellation, concurrent responses, dynamic
+discovery, and Tower P2C integration.
 
 ---
 

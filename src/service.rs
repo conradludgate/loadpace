@@ -33,10 +33,10 @@ struct ReadyWaker {
 
 impl ReadyWaker {
     fn register(&self, waker: &Waker) {
-        self.wakers
-            .lock()
-            .expect("ready waker mutex poisoned")
-            .push(waker.clone());
+        let mut wakers = self.wakers.lock().expect("ready waker mutex poisoned");
+        if !wakers.iter().any(|existing| existing.will_wake(waker)) {
+            wakers.push(waker.clone());
+        }
     }
 
     fn wake(&self) {

@@ -1,7 +1,8 @@
 use loadpace::{
     EndpointConfig, EndpointController, Gcra, Gradient2, Gradient2Config, LatencyEstimator,
-    LatencyEstimatorConfig, Outcome, ProbeKind, ProbeState, ScheduleError,
+    LatencyEstimatorConfig, Outcome, ProbeKind, ProbeSchedule, ProbeState, ScheduleError,
 };
+use rand::SeedableRng;
 use std::time::{Duration, Instant};
 
 fn at_zero() -> Instant {
@@ -97,6 +98,25 @@ fn probes_are_additive_positive_and_multiplicative_negative() {
         Some(ProbeKind::Negative { factor: 0.8 })
     );
     assert!((state.effective_concurrency(8.0, now) - 6.4).abs() < f64::EPSILON);
+}
+
+#[test]
+fn controller_can_drive_seeded_stochastic_probes() {
+    let now = at_zero();
+    let mut controller = EndpointController::new(EndpointConfig::default(), now);
+    let schedule = ProbeSchedule {
+        positive_probability: 1.0,
+        negative_probability: 0.0,
+        positive_delta: 1.0,
+        ..ProbeSchedule::default()
+    };
+    let mut rng = rand::rngs::StdRng::seed_from_u64(5);
+
+    assert!(controller.maybe_start_probe(&schedule, &mut rng, now).is_some());
+    assert_eq!(
+        controller.snapshot(now).effective_concurrency,
+        controller.snapshot(now).target_concurrency + 1.0
+    );
 }
 
 #[test]

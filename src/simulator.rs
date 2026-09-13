@@ -14,7 +14,7 @@ use rand::{Rng, SeedableRng};
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
-/// A fixed-service-time endpoint used by [`Simulator`].
+/// A fixed-service-time endpoint used by [`simulate`].
 #[derive(Clone, Debug)]
 pub struct SimulatedEndpoint {
     pub config: EndpointConfig,

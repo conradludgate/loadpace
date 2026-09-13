@@ -119,4 +119,3 @@ fn rate_to_interval(rate_per_second: f64) -> Duration {
 pub(crate) fn saturating_add(instant: Instant, duration: Duration) -> Instant {
     instant.checked_add(duration).unwrap_or(instant)
 }
-

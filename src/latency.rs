@@ -66,7 +66,10 @@ impl LatencyEstimator {
         let value = sample.max(self.config.min_rtt).as_secs_f64();
         self.short = ewma(self.short, value, self.config.short_alpha);
         self.long = ewma(self.long, value, self.config.long_alpha);
-        self.baseline = self.baseline.min(value).max(self.config.min_rtt.as_secs_f64());
+        self.baseline = self
+            .baseline
+            .min(value)
+            .max(self.config.min_rtt.as_secs_f64());
         self.samples += 1;
     }
 
@@ -94,4 +97,3 @@ impl LatencyEstimator {
 fn ewma(previous: f64, sample: f64, alpha: f64) -> f64 {
     previous + alpha * (sample - previous)
 }
-
