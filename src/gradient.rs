@@ -92,9 +92,24 @@ impl Gradient2 {
     /// diagnostics, but it must not increase the operating point: low demand
     /// is not evidence that the endpoint has spare capacity.
     pub fn on_rtt(&mut self, current_rtt: Duration, long_rtt: Duration, inflight: usize) -> bool {
+        self.on_rtt_with_pacing(current_rtt, long_rtt, inflight, true)
+    }
+
+    /// Updates the operating point with an explicit pacing signal.
+    ///
+    /// `was_paced` is true when the request had to wait for a future GCRA
+    /// slot. A healthy request that arrived while the pacer was idle is
+    /// application-limited and must not cause additive growth.
+    pub fn on_rtt_with_pacing(
+        &mut self,
+        current_rtt: Duration,
+        long_rtt: Duration,
+        inflight: usize,
+        was_paced: bool,
+    ) -> bool {
         let current_rtt = current_rtt.as_secs_f64().max(f64::MIN_POSITIVE);
         let long_rtt = long_rtt.as_secs_f64().max(f64::MIN_POSITIVE);
-        let application_limited = (inflight as f64) < self.concurrency / 2.0;
+        let application_limited = !was_paced || (inflight as f64) < self.concurrency / 2.0;
         if application_limited {
             return false;
         }

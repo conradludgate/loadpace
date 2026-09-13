@@ -113,9 +113,39 @@ fn gradient2_does_not_grow_when_application_limited() {
     let mut gradient = Gradient2::new(Gradient2Config::default());
     let initial = gradient.concurrency();
 
-    assert!(!gradient.on_rtt(Duration::from_millis(10), Duration::from_millis(10), 0,));
+    assert!(!gradient.on_rtt_with_pacing(
+        Duration::from_millis(10),
+        Duration::from_millis(10),
+        1,
+        false,
+    ));
     assert_eq!(gradient.concurrency(), initial);
     assert_eq!(gradient.updates(), 0);
+}
+
+#[test]
+fn controller_marks_future_slots_as_paced() {
+    let now = at_zero();
+    let mut controller = EndpointController::new(EndpointConfig::default(), now);
+
+    let first_reservation = controller.reserve(now).unwrap();
+    let first = controller
+        .on_dispatched(first_reservation, now)
+        .expect("the first request should dispatch immediately");
+    assert!(!first.was_paced());
+    assert!(controller.on_complete(
+        first,
+        Outcome::Success,
+        Duration::from_millis(50),
+        now + Duration::from_millis(1),
+    ));
+
+    let reservation = controller.reserve(now + Duration::from_millis(1)).unwrap();
+    let dispatch_at = now + Duration::from_millis(50);
+    let second = controller
+        .on_dispatched(reservation, dispatch_at)
+        .expect("the future slot should become dispatchable");
+    assert!(second.was_paced());
 }
 
 #[test]

@@ -67,11 +67,16 @@ pub struct InFlightRequest {
     controller_id: u64,
     id: u64,
     dispatched_at: Instant,
+    was_paced: bool,
 }
 
 impl InFlightRequest {
     pub fn dispatched_at(&self) -> Instant {
         self.dispatched_at
+    }
+
+    pub fn was_paced(&self) -> bool {
+        self.was_paced
     }
 }
 
@@ -89,6 +94,7 @@ pub enum DispatchState {
 struct PendingReservation {
     id: u64,
     scheduled_at: Instant,
+    was_paced: bool,
 }
 
 /// A point-in-time view useful for metrics, tests, and P2C load prediction.
@@ -211,8 +217,11 @@ impl EndpointController {
             .next_id
             .checked_add(1)
             .ok_or(crate::ScheduleError::IdExhausted)?;
-        self.pending
-            .push_back(PendingReservation { id, scheduled_at });
+        self.pending.push_back(PendingReservation {
+            id,
+            scheduled_at,
+            was_paced: scheduled_at > now,
+        });
         self.queued += 1;
 
         Ok(DispatchReservation {
@@ -298,6 +307,7 @@ impl EndpointController {
             controller_id: self.controller_id,
             id: reservation.id,
             dispatched_at: now,
+            was_paced: pending.was_paced,
         })
     }
 
@@ -320,8 +330,12 @@ impl EndpointController {
         match outcome {
             Outcome::Success => {
                 self.latency.observe(latency);
-                self.gradient
-                    .on_rtt(self.latency.short(), self.latency.long(), self.inflight);
+                self.gradient.on_rtt_with_pacing(
+                    self.latency.short(),
+                    self.latency.long(),
+                    self.inflight,
+                    request.was_paced(),
+                );
             }
             Outcome::Failure => {
                 self.failures += 1;
