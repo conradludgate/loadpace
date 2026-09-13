@@ -1,5 +1,5 @@
-use futures_util::stream;
 use futures_util::StreamExt;
+use futures_util::stream;
 use loadpace::{AdaptiveDiscovery, EndpointConfig};
 use std::future::Future;
 use std::pin::Pin;

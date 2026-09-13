@@ -9,9 +9,9 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll, Waker};
 use std::time::Instant;
+use tower::Service;
 use tower::discover::Change;
 use tower::load::Load;
-use tower::Service;
 
 /// A comparable predicted completion cost for P2C selection.
 ///

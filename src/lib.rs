@@ -23,7 +23,7 @@ pub use gradient::{Gradient2, Gradient2Config};
 pub use latency::{LatencyEstimator, LatencyEstimatorConfig};
 pub use probe::{Probe, ProbeKind, ProbeSchedule, ProbeState};
 pub use simulator::{
-    simulate, EndpointReport, SimulatedEndpoint, SimulationConfig, SimulationReport,
+    EndpointReport, SimulatedEndpoint, SimulationConfig, SimulationReport, simulate,
 };
 
 #[cfg(feature = "tower")]

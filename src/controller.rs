@@ -1,8 +1,8 @@
-use crate::gcra::{saturating_add, Gcra};
+use crate::ScheduleError;
+use crate::gcra::{Gcra, saturating_add};
 use crate::gradient::{Gradient2, Gradient2Config};
 use crate::latency::{LatencyEstimator, LatencyEstimatorConfig};
 use crate::probe::{Probe, ProbeSchedule, ProbeState};
-use crate::ScheduleError;
 use rand::Rng;
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};

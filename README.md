@@ -46,6 +46,8 @@ Understand the design and the reasoning behind it:
 
 ## Install
 
+Loadpace targets the Rust 2024 Edition and requires Rust 1.85 or newer.
+
 The core controller and simulator are available by default. Tower integration
 is enabled by default too, and can be disabled with `default-features = false`.
 

@@ -112,9 +112,11 @@ fn controller_can_drive_seeded_stochastic_probes() {
     };
     let mut rng = rand::rngs::StdRng::seed_from_u64(5);
 
-    assert!(controller
-        .maybe_start_probe(&schedule, &mut rng, now)
-        .is_some());
+    assert!(
+        controller
+            .maybe_start_probe(&schedule, &mut rng, now)
+            .is_some()
+    );
     assert_eq!(
         controller.snapshot(now).effective_concurrency,
         controller.snapshot(now).target_concurrency + 1.0

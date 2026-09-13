@@ -3,6 +3,8 @@
 This is the lookup-oriented reference for the current public controller API.
 For reasons behind the design, see [the explanation](../explanation/design.md).
 
+The crate targets the Rust 2024 Edition and requires Rust 1.85 or newer.
+
 ## Feature flags
 
 The `tower` feature is enabled by default.

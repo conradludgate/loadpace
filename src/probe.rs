@@ -1,4 +1,4 @@
-use rand::Rng;
+use rand::{Rng, RngExt};
 use std::time::{Duration, Instant};
 
 /// The temporary perturbations supported by Loadpace.
@@ -106,7 +106,7 @@ impl ProbeSchedule {
             return state.current();
         }
 
-        let draw = rng.gen::<f64>();
+        let draw = rng.random::<f64>();
         if draw < self.positive_probability {
             state.start_positive(self.positive_delta, now + self.duration);
             state.current()

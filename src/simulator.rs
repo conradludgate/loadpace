@@ -10,7 +10,7 @@ use crate::{
     Outcome,
 };
 use rand::rngs::StdRng;
-use rand::{Rng, SeedableRng};
+use rand::{RngExt, SeedableRng};
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
@@ -190,8 +190,8 @@ fn choose_p2c(endpoints: &mut [EndpointRuntime], rng: &mut StdRng, now: Instant)
         [] => None,
         [only] => Some(*only),
         _ => {
-            let a = rng.gen_range(0..ready.len());
-            let mut b = rng.gen_range(0..ready.len() - 1);
+            let a = rng.random_range(0..ready.len());
+            let mut b = rng.random_range(0..ready.len() - 1);
             if b >= a {
                 b += 1;
             }
