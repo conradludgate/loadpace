@@ -51,7 +51,7 @@ type ReadinessFuture = Pin<
 pub struct AdaptiveEndpoint<S> {
     shared: Arc<Shared<S>>,
     readiness_permit: Option<tokio::sync::OwnedSemaphorePermit>,
-    readiness: Option<ReadinessFuture>,
+    readiness: Mutex<Option<ReadinessFuture>>,
 }
 
 impl<S> AdaptiveEndpoint<S> {
@@ -69,7 +69,7 @@ impl<S> AdaptiveEndpoint<S> {
                 dispatch: tokio::sync::Notify::new(),
             }),
             readiness_permit: None,
-            readiness: None,
+            readiness: Mutex::new(None),
         }
     }
 
@@ -155,7 +155,7 @@ impl<S> Clone for AdaptiveEndpoint<S> {
         Self {
             shared: Arc::clone(&self.shared),
             readiness_permit: None,
-            readiness: None,
+            readiness: Mutex::new(None),
         }
     }
 }
@@ -185,14 +185,19 @@ where
             return Poll::Ready(Ok(()));
         }
 
-        if self.readiness.is_none() {
+        let mut readiness = self
+            .readiness
+            .lock()
+            .expect("readiness future mutex poisoned");
+        if readiness.is_none() {
             match Arc::clone(&self.shared.ready).try_acquire_owned() {
                 Ok(permit) => {
+                    drop(readiness);
                     self.readiness_permit = Some(permit);
                     return Poll::Ready(Ok(()));
                 }
                 Err(tokio::sync::TryAcquireError::NoPermits) => {
-                    self.readiness = Some(Box::pin(Arc::clone(&self.shared.ready).acquire_owned()));
+                    *readiness = Some(Box::pin(Arc::clone(&self.shared.ready).acquire_owned()));
                 }
                 Err(tokio::sync::TryAcquireError::Closed) => {
                     panic!("AdaptiveEndpoint readiness semaphore was closed")
@@ -200,15 +205,14 @@ where
             }
         }
 
-        match self
-            .readiness
+        match readiness
             .as_mut()
             .expect("readiness future must exist")
             .as_mut()
             .poll(cx)
         {
             Poll::Ready(Ok(permit)) => {
-                self.readiness = None;
+                *readiness = None;
                 self.readiness_permit = Some(permit);
                 Poll::Ready(Ok(()))
             }

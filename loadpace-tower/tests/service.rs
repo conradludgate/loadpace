@@ -11,6 +11,8 @@ use tower::{Service, ServiceExt};
 
 type BoxResult<T> = Pin<Box<dyn Future<Output = Result<T, &'static str>> + Send>>;
 
+fn assert_send_sync<T: Send + Sync>() {}
+
 #[derive(Clone, Default)]
 struct Echo;
 
@@ -100,6 +102,11 @@ async fn endpoint_dispatches_and_records_a_success() {
     assert_eq!(snapshot.inflight, 0);
     assert_eq!(snapshot.queued, 0);
     assert_eq!(snapshot.latency_samples, 1);
+}
+
+#[test]
+fn endpoint_remains_send_and_sync() {
+    assert_send_sync::<AdaptiveEndpoint<Echo>>();
 }
 
 #[tokio::test(start_paused = true)]
