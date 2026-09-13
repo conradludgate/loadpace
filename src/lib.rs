@@ -14,12 +14,13 @@ mod probe;
 mod service;
 
 pub use controller::{
-    ControllerSnapshot, DispatchReservation, EndpointConfig, EndpointController, Outcome,
+    ControllerSnapshot, DispatchReservation, DispatchState, EndpointConfig, EndpointController,
+    InFlightRequest, Outcome,
 };
 pub use gcra::{Gcra, GcraReservation};
 pub use gradient::{Gradient2, Gradient2Config};
 pub use latency::{LatencyEstimator, LatencyEstimatorConfig};
-pub use probe::{Probe, ProbeKind, ProbeState};
+pub use probe::{Probe, ProbeKind, ProbeSchedule, ProbeState};
 
 #[cfg(feature = "tower")]
 pub use service::{AdaptiveEndpoint, LoadMetric, ResponseFuture};
@@ -33,4 +34,3 @@ pub enum ScheduleError {
     /// The emergency inflight safety cap is full.
     InflightLimit,
 }
-
