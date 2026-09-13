@@ -1,10 +1,8 @@
 //! Behavioral acceptance tests for multi-client fairness and endpoint churn.
 //!
-//! These scenarios intentionally remain ignored until the controller has
-//! time-based probing and a congestion model that can demonstrate convergence.
-//! The harness is active test infrastructure: enabling a scenario should turn
-//! a fairness regression into a normal test failure rather than a production
-//! observation.
+//! The harness uses seeded time-based probes and a worker-pooled server model.
+//! Scenarios that still need longer convergence or richer discovery semantics
+//! remain explicitly ignored rather than weakening their assertions.
 
 use loadpace::{
     DispatchReservation, DispatchState, EndpointConfig, EndpointController, InFlightRequest,
@@ -33,9 +31,11 @@ struct ClientRuntime {
     arrival_interval: Duration,
     config: EndpointConfig,
     active: bool,
+    arrival_phase: Duration,
     next_arrival: Option<Instant>,
     controllers: Vec<EndpointController>,
     pending: Vec<VecDeque<DispatchReservation>>,
+    probe_rng: StdRng,
     measurement_completed: u64,
 }
 
@@ -53,7 +53,7 @@ struct Completion {
     request: InFlightRequest,
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 struct FairnessReport {
     client_completed: Vec<u64>,
     server_completed: Vec<u64>,
@@ -95,16 +95,20 @@ fn run(
             measurement_completed: 0,
         })
         .collect();
+    let probe_schedule = fairness_probe_schedule();
     let mut runtimes: Vec<_> = clients
         .into_iter()
-        .map(|client| {
+        .enumerate()
+        .map(|(client_index, client)| {
             let join_at = start + client.join_at;
+            let arrival_phase = Duration::from_millis((client_index % 10) as u64);
             ClientRuntime {
                 join_at,
                 arrival_interval: Duration::from_secs_f64(1.0 / client.offered_rate),
                 config: client.config.clone(),
                 active: client.join_at.is_zero(),
-                next_arrival: client.join_at.is_zero().then_some(join_at),
+                arrival_phase,
+                next_arrival: client.join_at.is_zero().then_some(join_at + arrival_phase),
                 controllers: initial_servers
                     .iter()
                     .map(|server| {
@@ -117,6 +121,7 @@ fn run(
                 pending: (0..initial_servers.len())
                     .map(|_| VecDeque::new())
                     .collect(),
+                probe_rng: StdRng::seed_from_u64(1000 + client_index as u64),
                 measurement_completed: 0,
             }
         })
@@ -194,7 +199,7 @@ fn run(
         for client in &mut runtimes {
             if !client.active && client.join_at <= now {
                 client.active = true;
-                client.next_arrival = Some(client.join_at);
+                client.next_arrival = Some(client.join_at + client.arrival_phase);
             }
         }
 
@@ -233,14 +238,16 @@ fn run(
                 continue;
             }
 
+            for controller in &mut client.controllers {
+                controller.refresh(now);
+                controller.maybe_start_probe(&probe_schedule, &mut client.probe_rng, now);
+            }
+
             let candidates: Vec<_> = client
                 .controllers
                 .iter_mut()
                 .enumerate()
-                .filter_map(|(index, controller)| {
-                    controller.refresh(now);
-                    controller.may_schedule().then_some(index)
-                })
+                .filter_map(|(index, controller)| controller.may_schedule().then_some(index))
                 .collect();
             if !candidates.is_empty() {
                 let chosen = if candidates.len() == 1 {
@@ -319,6 +326,18 @@ fn run(
     }
 }
 
+fn fairness_probe_schedule() -> loadpace::ProbeSchedule {
+    loadpace::ProbeSchedule {
+        positive_probability: 0.5,
+        negative_probability: 0.5,
+        positive_delta: 1.0,
+        negative_factor: 0.8,
+        duration: Duration::from_millis(250),
+        min_interval: Duration::from_millis(500),
+        max_interval: Duration::from_millis(500),
+    }
+}
+
 fn endpoint_config(base: &EndpointConfig, service_time: Duration) -> EndpointConfig {
     let mut config = base.clone();
     config.latency.initial_rtt = service_time;
@@ -350,7 +369,6 @@ fn server(workers: usize) -> ServerSpec {
 }
 
 #[test]
-#[ignore = "enable after fair probing and controller convergence are implemented"]
 fn long_running_identical_clients_have_a_fair_measurement() {
     let report = run(
         client_specs(8, Duration::ZERO),
@@ -370,7 +388,7 @@ fn long_running_identical_clients_have_a_fair_measurement() {
 }
 
 #[test]
-#[ignore = "enable after fair probing and controller convergence are implemented"]
+#[ignore = "new clients currently need a longer convergence window"]
 fn clients_joining_after_warmup_have_a_fair_measurement() {
     let report = run(
         client_specs(4, Duration::ZERO)
@@ -393,7 +411,6 @@ fn clients_joining_after_warmup_have_a_fair_measurement() {
 }
 
 #[test]
-#[ignore = "enable after server capacity and discovery convergence are implemented"]
 fn servers_joining_after_warmup_receive_capacity_proportional_work() {
     let report = run(
         client_specs(8, Duration::ZERO),
@@ -405,4 +422,25 @@ fn servers_joining_after_warmup_receive_capacity_proportional_work() {
 
     let ratio = report.server_completed[1] as f64 / report.server_completed[0] as f64;
     assert!(ratio > 1.5 && ratio < 5.0, "{report:?}");
+}
+
+#[test]
+fn fairness_measurements_are_reproducible_with_the_same_seed() {
+    let clients = client_specs(8, Duration::ZERO);
+    let first = run(
+        clients.clone(),
+        vec![server(4)],
+        None,
+        Duration::from_secs(5),
+        Duration::from_secs(15),
+    );
+    let second = run(
+        clients,
+        vec![server(4)],
+        None,
+        Duration::from_secs(5),
+        Duration::from_secs(15),
+    );
+
+    assert_eq!(first, second);
 }
