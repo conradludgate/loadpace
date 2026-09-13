@@ -1,4 +1,5 @@
-use loadpace::{AdaptiveEndpoint, EndpointConfig, LatencyEstimatorConfig};
+use loadpace::{EndpointConfig, LatencyEstimatorConfig};
+use loadpace_tower::AdaptiveEndpoint;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;

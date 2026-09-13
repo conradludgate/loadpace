@@ -1,6 +1,7 @@
 use futures_util::StreamExt;
 use futures_util::stream;
-use loadpace::{AdaptiveDiscovery, EndpointConfig};
+use loadpace::EndpointConfig;
+use loadpace_tower::AdaptiveDiscovery;
 use std::future::Future;
 use std::pin::Pin;
 use std::task::{Context, Poll};

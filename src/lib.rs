@@ -1,8 +1,7 @@
-//! Adaptive client-side load balancing and backpressure.
+//! Runtime-independent adaptive client-side load balancing and backpressure.
 //!
-//! The crate is split into a deterministic controller and an optional Tower
-//! adapter. The controller can be simulated without an async runtime; the
-//! adapter turns its decisions into a bounded `tower::Service`.
+//! This crate contains the deterministic controller and simulator. Framework
+//! integrations live in separate crates such as `loadpace-tower`.
 
 mod controller;
 mod gcra;
@@ -10,9 +9,6 @@ mod gradient;
 mod latency;
 mod probe;
 mod simulator;
-
-#[cfg(feature = "tower")]
-mod service;
 
 pub use controller::{
     ControllerSnapshot, DispatchReservation, DispatchState, EndpointConfig, EndpointController,
@@ -25,9 +21,6 @@ pub use probe::{Probe, ProbeKind, ProbeSchedule, ProbeState};
 pub use simulator::{
     EndpointReport, SimulatedEndpoint, SimulationConfig, SimulationReport, simulate,
 };
-
-#[cfg(feature = "tower")]
-pub use service::{AdaptiveDiscovery, AdaptiveEndpoint, LoadMetric, ResponseFuture};
 
 /// A small error used by callers that want to model rejected scheduling
 /// explicitly in a simulator or their own adapter.

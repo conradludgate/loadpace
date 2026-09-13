@@ -1,0 +1,22 @@
+[package]
+name = "loadpace-tower"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+description = "Tower adapters for the loadpace adaptive controller"
+license = "MIT OR Apache-2.0"
+readme = "README.md"
+repository = "https://github.com/conradludgate/loadpace"
+keywords = ["load-balancing", "backpressure", "tower", "congestion-control"]
+categories = ["network-programming", "asynchronous"]
+
+[dependencies]
+futures-core = "0.3"
+loadpace = { version = "0.1", path = ".." }
+tokio = { version = "1", features = ["macros", "sync", "time"] }
+tower = { version = "0.5", features = ["discover", "load"] }
+
+[dev-dependencies]
+futures-util = "0.3"
+tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "sync", "time", "test-util"] }
+tower = { version = "0.5", features = ["balance", "discover", "load", "util"] }

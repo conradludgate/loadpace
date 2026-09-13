@@ -1,8 +1,8 @@
-use crate::controller::{
+use futures_core::stream::{Stream, TryStream};
+use loadpace::{
     DispatchReservation, DispatchState, EndpointConfig, EndpointController, InFlightRequest,
     Outcome,
 };
-use futures_core::stream::{Stream, TryStream};
 use std::future::Future;
 use std::marker::PhantomData;
 use std::pin::Pin;
@@ -94,7 +94,7 @@ impl<S> AdaptiveEndpoint<S> {
         &self.shared.controller
     }
 
-    pub fn snapshot(&self) -> crate::ControllerSnapshot {
+    pub fn snapshot(&self) -> loadpace::ControllerSnapshot {
         self.shared
             .controller
             .lock()
