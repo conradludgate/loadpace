@@ -107,8 +107,34 @@ impl Gradient2 {
         inflight: usize,
         was_paced: bool,
     ) -> bool {
+        self.on_rtt_with_reference(current_rtt, long_rtt, inflight, was_paced)
+    }
+
+    /// Updates the operating point using a minimum-RTT reference.
+    ///
+    /// Endpoint controllers use this form so an incumbent's queue-inflated
+    /// long RTT cannot become permission to keep its share after a new client
+    /// joins. The reference remains anchored to the endpoint's observed
+    /// minimum while `current_rtt` reacts quickly to shared queueing.
+    pub fn on_rtt_with_baseline(
+        &mut self,
+        current_rtt: Duration,
+        baseline_rtt: Duration,
+        inflight: usize,
+        was_paced: bool,
+    ) -> bool {
+        self.on_rtt_with_reference(current_rtt, baseline_rtt, inflight, was_paced)
+    }
+
+    fn on_rtt_with_reference(
+        &mut self,
+        current_rtt: Duration,
+        reference_rtt: Duration,
+        inflight: usize,
+        was_paced: bool,
+    ) -> bool {
         let current_rtt = current_rtt.as_secs_f64().max(f64::MIN_POSITIVE);
-        let long_rtt = long_rtt.as_secs_f64().max(f64::MIN_POSITIVE);
+        let reference_rtt = reference_rtt.as_secs_f64().max(f64::MIN_POSITIVE);
         let application_limited = !was_paced || (inflight as f64) < self.concurrency / 2.0;
         if application_limited {
             return false;
@@ -117,7 +143,7 @@ impl Gradient2 {
         // Bound the gradient so a single outlier cannot halve the limit more
         // than once, while a healthy sample can recover toward the current
         // operating point.
-        let gradient = (self.config.tolerance * long_rtt / current_rtt).clamp(0.5, 1.0);
+        let gradient = (self.config.tolerance * reference_rtt / current_rtt).clamp(0.5, 1.0);
         let estimate = self.concurrency * gradient + self.config.gain;
         self.concurrency = (self.concurrency * (1.0 - self.config.smoothing)
             + estimate * self.config.smoothing)

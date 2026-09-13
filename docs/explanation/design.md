@@ -34,12 +34,15 @@ GCRA then spaces requests at that rate. Over time, the endpoint can average
 around 1.3 concurrent requests even though instantaneous request counts are
 integers.
 
-`Gradient2` compares a current RTT estimate with a long-term EWMA, bounds the
+`Gradient2` compares a current RTT estimate with a reference RTT, bounds the
 gradient against latency outliers, and smooths the resulting fractional
-operating point. It does not grow the operating point from application-limited
-samples, because low demand is not evidence of spare endpoint capacity. Its
-constants and exact workload behavior remain candidates for simulation-driven
-tuning.
+operating point. The direct Gradient2 API can use a long-term EWMA; the
+endpoint controller anchors its reference to the observed minimum RTT so a
+shared queue cannot become an incumbent's permanent advantage when another
+client joins. It also does not grow the operating point from
+application-limited samples, because low demand is not evidence of spare
+endpoint capacity. Its constants and exact workload behavior remain
+candidates for simulation-driven tuning.
 
 ## GCRA is the normal actuator
 

@@ -37,6 +37,11 @@ Reservations must be dispatched FIFO within one endpoint. Framework adapters
 should enforce this by making later response futures wait for earlier
 reservations.
 
+The endpoint controller uses the latency estimator's minimum observed RTT as
+the Gradient2 reference. This keeps shared queueing visible to incumbents and
+newly joined clients alike; the long RTT EWMA remains available in snapshots
+and for direct `Gradient2` callers.
+
 ## `DispatchState`
 
 | Variant | Meaning |

@@ -71,10 +71,12 @@ pub struct InFlightRequest {
 }
 
 impl InFlightRequest {
+    /// Returns the actual dispatch time used for RTT measurement.
     pub fn dispatched_at(&self) -> Instant {
         self.dispatched_at
     }
 
+    /// Returns whether the request waited for a future GCRA slot.
     pub fn was_paced(&self) -> bool {
         self.was_paced
     }
@@ -330,9 +332,13 @@ impl EndpointController {
         match outcome {
             Outcome::Success => {
                 self.latency.observe(latency);
-                self.gradient.on_rtt_with_pacing(
+                // Keep the congestion reference anchored to the endpoint's
+                // minimum RTT. A per-client long EWMA can absorb shared
+                // queueing and let an incumbent retain an unfair share when
+                // a new client joins.
+                self.gradient.on_rtt_with_baseline(
                     self.latency.short(),
-                    self.latency.long(),
+                    self.latency.baseline(),
                     self.inflight,
                     request.was_paced(),
                 );
@@ -393,7 +399,12 @@ impl EndpointController {
     /// conditions remain stable.
     pub fn predicted_completion(&self, now: Instant) -> Instant {
         let dispatch = self.next_virtual_slot(now);
-        saturating_add(dispatch, self.latency.expected_rtt())
+        let expected_rtt = if self.queued == 0 && self.inflight == 0 {
+            self.latency.baseline()
+        } else {
+            self.latency.expected_rtt()
+        };
+        saturating_add(dispatch, expected_rtt)
     }
 
     /// Returns a scalar suitable for comparing endpoints. Lower is better.
