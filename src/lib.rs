@@ -30,4 +30,6 @@ pub enum ScheduleError {
     QueueFull,
     /// The emergency inflight safety cap is full.
     InflightLimit,
+    /// The controller exhausted its request identity space.
+    IdExhausted,
 }

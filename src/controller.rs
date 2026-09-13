@@ -4,8 +4,11 @@ use crate::gradient::{Gradient2, Gradient2Config};
 use crate::latency::{LatencyEstimator, LatencyEstimatorConfig};
 use crate::probe::{Probe, ProbeSchedule, ProbeState};
 use rand::Rng;
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
+
+static NEXT_CONTROLLER_ID: AtomicU64 = AtomicU64::new(0);
 
 /// Configuration for one adaptive endpoint.
 #[derive(Clone, Debug)]
@@ -53,13 +56,15 @@ pub enum Outcome {
 /// A request that has reserved a slot in the endpoint's virtual queue.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DispatchReservation {
+    controller_id: u64,
     id: u64,
 }
 
 /// A request that has actually been dispatched and is now counted against the
 /// emergency inflight cap.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct InFlightRequest {
+    controller_id: u64,
     id: u64,
     dispatched_at: Instant,
 }
@@ -114,14 +119,16 @@ pub struct ControllerSnapshot {
 /// This type contains no async machinery and can be driven by a deterministic
 /// simulator. `reserve` creates a virtual GCRA slot, while `on_dispatched`
 /// commits a slot only when the underlying service is genuinely ready.
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct EndpointController {
+    controller_id: u64,
     config: EndpointConfig,
     latency: LatencyEstimator,
     gradient: Gradient2,
     pacer: Gcra,
     probe: ProbeState,
     pending: VecDeque<PendingReservation>,
+    active_requests: HashSet<u64>,
     next_id: u64,
     queued: usize,
     inflight: usize,
@@ -140,14 +147,17 @@ impl EndpointController {
         let latency = LatencyEstimator::new(config.latency.clone());
         let gradient = Gradient2::new(config.gradient.clone());
         let rate = gradient.concurrency() / latency.expected_rtt().as_secs_f64();
+        let controller_id = NEXT_CONTROLLER_ID.fetch_add(1, Ordering::Relaxed);
 
         Self {
+            controller_id,
             config,
             latency,
             gradient,
             pacer: Gcra::new(rate, now),
             probe: ProbeState::new(),
             pending: VecDeque::new(),
+            active_requests: HashSet::new(),
             next_id: 0,
             queued: 0,
             inflight: 0,
@@ -197,12 +207,18 @@ impl EndpointController {
 
         let scheduled_at = self.next_virtual_slot(now);
         let id = self.next_id;
-        self.next_id = self.next_id.wrapping_add(1);
+        self.next_id = self
+            .next_id
+            .checked_add(1)
+            .ok_or(crate::ScheduleError::IdExhausted)?;
         self.pending
             .push_back(PendingReservation { id, scheduled_at });
         self.queued += 1;
 
-        Ok(DispatchReservation { id })
+        Ok(DispatchReservation {
+            controller_id: self.controller_id,
+            id,
+        })
     }
 
     /// Drops an accepted but not-yet-dispatched request.
@@ -211,6 +227,10 @@ impl EndpointController {
     /// virtual tail is rebuilt from the committed TAT, so a cancelled hole
     /// cannot permanently throttle the endpoint.
     pub fn cancel(&mut self, reservation: DispatchReservation, now: Instant) -> bool {
+        if reservation.controller_id != self.controller_id {
+            return false;
+        }
+
         let Some(position) = self
             .pending
             .iter()
@@ -230,6 +250,10 @@ impl EndpointController {
         reservation: DispatchReservation,
         now: Instant,
     ) -> DispatchState {
+        if reservation.controller_id != self.controller_id {
+            return DispatchState::Cancelled;
+        }
+
         let Some(front) = self.pending.front() else {
             return DispatchState::Cancelled;
         };
@@ -266,10 +290,12 @@ impl EndpointController {
         debug_assert_eq!(pending.id, reservation.id);
         self.queued -= 1;
         self.inflight += 1;
+        debug_assert!(self.active_requests.insert(reservation.id));
         self.pacer.commit(now);
         self.rebuild_virtual_queue(now);
 
         Some(InFlightRequest {
+            controller_id: self.controller_id,
             id: reservation.id,
             dispatched_at: now,
         })
@@ -282,11 +308,13 @@ impl EndpointController {
         outcome: Outcome,
         latency: Duration,
         now: Instant,
-    ) {
-        if self.inflight == 0 {
-            return;
+    ) -> bool {
+        if request.controller_id != self.controller_id || !self.active_requests.remove(&request.id)
+        {
+            return false;
         }
 
+        debug_assert_eq!(self.inflight, self.active_requests.len() + 1);
         self.inflight -= 1;
         self.completed += 1;
 
@@ -302,10 +330,8 @@ impl EndpointController {
             }
         }
 
-        // The id is currently only diagnostic. Keeping the argument in the
-        // API makes it possible to validate/track active requests later.
-        let _ = request.id;
         self.update_rate(now);
+        true
     }
 
     /// Records an error obtained while the transport was being made ready.

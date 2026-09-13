@@ -174,3 +174,32 @@ fn controller_uses_little_law_and_records_failures() {
     assert!(snapshot.target_concurrency < 1.3);
     assert!(snapshot.effective_rate > 0.0);
 }
+
+#[test]
+fn controller_rejects_a_completion_from_another_controller() {
+    let now = at_zero();
+    let mut first = EndpointController::new(EndpointConfig::default(), now);
+    let mut second = EndpointController::new(EndpointConfig::default(), now);
+
+    let first_reservation = first.reserve(now).unwrap();
+    let first_request = first.on_dispatched(first_reservation, now).unwrap();
+    let second_reservation = second.reserve(now).unwrap();
+    let second_request = second.on_dispatched(second_reservation, now).unwrap();
+
+    assert!(!second.on_complete(
+        first_request,
+        Outcome::Success,
+        Duration::from_millis(1),
+        now + Duration::from_millis(1),
+    ));
+    assert_eq!(second.inflight(), 1);
+
+    assert!(second.on_complete(
+        second_request,
+        Outcome::Success,
+        Duration::from_millis(1),
+        now + Duration::from_millis(1),
+    ));
+    assert_eq!(second.inflight(), 0);
+    assert_eq!(second.snapshot(now).completed, 1);
+}

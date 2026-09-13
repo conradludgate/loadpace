@@ -27,7 +27,7 @@ The builder-style methods `.queue_capacity(value)` and
 | `reserve(now)` | Appends a bounded virtual queue reservation |
 | `dispatch_state(reservation, now)` | Reports `Ready`, a pacing deadline, FIFO wait, inflight limit, or cancellation |
 | `on_dispatched(reservation, now)` | Commits a reservation after the transport is ready |
-| `on_complete(request, outcome, latency, now)` | Releases inflight state and updates feedback |
+| `on_complete(request, outcome, latency, now)` | Releases inflight state and updates feedback; returns whether the token belonged to an active request |
 | `cancel(reservation, now)` | Removes a queued reservation and rebuilds the virtual tail |
 | `load(now)` | Returns predicted completion delay in seconds; lower is better |
 | `snapshot(now)` | Returns metrics and current controller state |
