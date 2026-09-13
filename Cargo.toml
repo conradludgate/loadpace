@@ -4,7 +4,7 @@ resolver = "3"
 
 [package]
 name = "loadpace"
-version = "0.1.0-rc0"
+version = "0.1.0-rc0.1"
 edition = "2024"
 rust-version = "1.85"
 description = "Runtime-independent adaptive client-side load balancing and backpressure"
