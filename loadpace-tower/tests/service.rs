@@ -210,6 +210,20 @@ async fn endpoint_failures_are_not_treated_as_fast_healthy_work() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn endpoint_exposes_explicit_probe_controls() {
+    let now = Instant::now();
+    let endpoint = AdaptiveEndpoint::new_at(Echo, config(1, Duration::from_millis(10)), now);
+
+    endpoint.start_positive_probe(1.0, now + Duration::from_secs(1));
+
+    let snapshot = endpoint.snapshot();
+    assert_eq!(
+        snapshot.effective_concurrency,
+        snapshot.target_concurrency + 1.0
+    );
+}
+
+#[tokio::test(start_paused = true)]
 async fn dropping_a_queued_response_releases_its_slot() {
     let mut endpoint =
         AdaptiveEndpoint::new_at(Echo, config(1, Duration::from_secs(1)), Instant::now());

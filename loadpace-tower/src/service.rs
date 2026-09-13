@@ -73,16 +73,30 @@ impl<S> AdaptiveEndpoint<S> {
         }
     }
 
-    pub fn controller(&self) -> &Mutex<EndpointController> {
-        &self.shared.controller
-    }
-
     pub fn snapshot(&self) -> loadpace::ControllerSnapshot {
         self.shared
             .controller
             .lock()
             .expect("controller mutex poisoned")
             .snapshot(Instant::now())
+    }
+
+    pub fn start_positive_probe(&self, delta: f64, until: Instant) {
+        let now = Instant::now();
+        self.shared
+            .controller
+            .lock()
+            .expect("controller mutex poisoned")
+            .start_positive_probe(delta, until, now);
+    }
+
+    pub fn start_negative_probe(&self, factor: f64, until: Instant) {
+        let now = Instant::now();
+        self.shared
+            .controller
+            .lock()
+            .expect("controller mutex poisoned")
+            .start_negative_probe(factor, until, now);
     }
 
     pub fn load_metric(&self) -> LoadMetric {

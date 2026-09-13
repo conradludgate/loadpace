@@ -29,6 +29,10 @@ starts immediately before `S::call`, so local queue and readiness delay do not
 enter the RTT sample. Dropping the future cancels a queued reservation or
 records a dispatched request as failed.
 
+`snapshot` returns controller metrics. `start_positive_probe` and
+`start_negative_probe` expose explicit probe control without exposing the
+adapter's internal mutable controller state.
+
 ## `LoadMetric`
 
 `LoadMetric` contains the predicted completion delay for one additional
