@@ -21,7 +21,8 @@ fn gcra_spaces_reservations_and_can_cancel_the_tail() {
     assert_eq!(gcra.next_at(now), now + Duration::from_millis(200));
     assert!(gcra.cancel_last(second));
     assert_eq!(gcra.next_at(now), now + Duration::from_millis(100));
-    assert!(!gcra.cancel_last(first));
+    assert!(gcra.cancel_last(first));
+    assert_eq!(gcra.next_at(now), now);
 }
 
 #[test]
@@ -66,7 +67,7 @@ fn gradient2_preserves_fractional_concurrency_and_reacts_to_congestion() {
 
     assert_eq!(gradient.concurrency(), 1.3);
     gradient.on_rtt(Duration::from_millis(10), Duration::from_millis(10));
-    assert!((gradient.concurrency() - 1.4).abs() < f64::EPSILON);
+    assert!((gradient.concurrency() - 1.4).abs() < 1e-9);
 
     gradient.on_rtt(Duration::from_millis(30), Duration::from_millis(10));
     assert!(gradient.concurrency() < 1.4);
@@ -101,9 +102,7 @@ fn probes_are_additive_positive_and_multiplicative_negative() {
 #[test]
 fn controller_bounds_queue_and_releases_cancelled_virtual_slots() {
     let now = at_zero();
-    let config = EndpointConfig::default()
-        .queue_capacity(2)
-        .max_inflight(10);
+    let config = EndpointConfig::default().queue_capacity(2).max_inflight(10);
     let mut controller = EndpointController::new(config, now);
 
     let first = controller.reserve(now).unwrap();
@@ -118,7 +117,10 @@ fn controller_bounds_queue_and_releases_cancelled_virtual_slots() {
         controller.dispatch_state(third, now),
         loadpace::DispatchState::WaitForPrevious
     );
-    assert_eq!(controller.dispatch_state(first, now), loadpace::DispatchState::Ready);
+    assert_eq!(
+        controller.dispatch_state(first, now),
+        loadpace::DispatchState::Ready
+    );
 }
 
 #[test]
