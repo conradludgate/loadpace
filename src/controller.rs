@@ -130,7 +130,10 @@ pub struct EndpointController {
 
 impl EndpointController {
     pub fn new(config: EndpointConfig, now: Instant) -> Self {
-        assert!(config.queue_capacity > 0, "endpoint queue capacity must be positive");
+        assert!(
+            config.queue_capacity > 0,
+            "endpoint queue capacity must be positive"
+        );
         assert!(config.max_inflight > 0, "max inflight must be positive");
 
         let latency = LatencyEstimator::new(config.latency.clone());
@@ -194,7 +197,8 @@ impl EndpointController {
         let scheduled_at = self.next_virtual_slot(now);
         let id = self.next_id;
         self.next_id = self.next_id.wrapping_add(1);
-        self.pending.push_back(PendingReservation { id, scheduled_at });
+        self.pending
+            .push_back(PendingReservation { id, scheduled_at });
         self.queued += 1;
 
         Ok(DispatchReservation { id })
@@ -206,7 +210,11 @@ impl EndpointController {
     /// virtual tail is rebuilt from the committed TAT, so a cancelled hole
     /// cannot permanently throttle the endpoint.
     pub fn cancel(&mut self, reservation: DispatchReservation, now: Instant) -> bool {
-        let Some(position) = self.pending.iter().position(|entry| entry.id == reservation.id) else {
+        let Some(position) = self
+            .pending
+            .iter()
+            .position(|entry| entry.id == reservation.id)
+        else {
             return false;
         };
 
@@ -216,7 +224,11 @@ impl EndpointController {
         true
     }
 
-    pub fn dispatch_state(&mut self, reservation: DispatchReservation, now: Instant) -> DispatchState {
+    pub fn dispatch_state(
+        &mut self,
+        reservation: DispatchReservation,
+        now: Instant,
+    ) -> DispatchState {
         let Some(front) = self.pending.front() else {
             return DispatchState::Cancelled;
         };
@@ -246,7 +258,10 @@ impl EndpointController {
             return None;
         }
 
-        let pending = self.pending.pop_front().expect("dispatch state checked the queue");
+        let pending = self
+            .pending
+            .pop_front()
+            .expect("dispatch state checked the queue");
         debug_assert_eq!(pending.id, reservation.id);
         self.queued -= 1;
         self.inflight += 1;
@@ -289,6 +304,15 @@ impl EndpointController {
         // The id is currently only diagnostic. Keeping the argument in the
         // API makes it possible to validate/track active requests later.
         let _ = request.id;
+        self.update_rate(now);
+    }
+
+    /// Records an error obtained while the transport was being made ready.
+    /// No request was dispatched, so this does not alter inflight accounting,
+    /// but the endpoint is still penalized for future scheduling.
+    pub fn on_admission_failure(&mut self, now: Instant) {
+        self.failures += 1;
+        self.gradient.on_failure();
         self.update_rate(now);
     }
 
@@ -342,10 +366,10 @@ impl EndpointController {
             base_rate,
             effective_rate,
             committed_tat: self.pacer.tat(),
-            virtual_tail_tat: self.pending.back().map(|entry| saturating_add(
-                entry.scheduled_at,
-                self.pacer.interval(),
-            )),
+            virtual_tail_tat: self
+                .pending
+                .back()
+                .map(|entry| saturating_add(entry.scheduled_at, self.pacer.interval())),
             queued: self.queued,
             inflight: self.inflight,
             queue_capacity: self.config.queue_capacity,

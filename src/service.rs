@@ -2,11 +2,14 @@ use crate::controller::{
     DispatchReservation, DispatchState, EndpointConfig, EndpointController, InFlightRequest,
     Outcome,
 };
+use futures_core::stream::{Stream, TryStream};
 use std::future::Future;
+use std::marker::PhantomData;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll, Waker};
 use std::time::Instant;
+use tower::discover::Change;
 use tower::load::Load;
 use tower::Service;
 
@@ -92,13 +95,67 @@ impl<S> AdaptiveEndpoint<S> {
     }
 
     pub fn load_metric(&self) -> LoadMetric {
-        LoadMetric(
-            self.shared
-                .controller
-                .lock()
-                .expect("controller mutex poisoned")
-                .load(Instant::now()),
-        )
+        let mut controller = self
+            .shared
+            .controller
+            .lock()
+            .expect("controller mutex poisoned");
+        let now = Instant::now();
+        controller.refresh(now);
+        LoadMetric(controller.load(now))
+    }
+}
+
+/// Maps a Tower discovery stream into freshly initialized adaptive endpoints.
+///
+/// The wrapper intentionally creates new controller state for every insert.
+/// This is the safe behavior when discovery removes and later reuses an
+/// endpoint key; state retention can be added without changing the discovery
+/// contract once churn behavior is better understood.
+pub struct AdaptiveDiscovery<D, Request> {
+    inner: D,
+    config: EndpointConfig,
+    _request: PhantomData<fn() -> Request>,
+}
+
+impl<D, Request> AdaptiveDiscovery<D, Request> {
+    pub fn new(inner: D, config: EndpointConfig) -> Self {
+        Self {
+            inner,
+            config,
+            _request: PhantomData,
+        }
+    }
+
+    pub fn into_inner(self) -> D {
+        self.inner
+    }
+}
+
+impl<D, Request, K, S> Stream for AdaptiveDiscovery<D, Request>
+where
+    D: TryStream<Ok = Change<K, S>> + Unpin,
+    K: Eq,
+    S: Service<Request> + Send + 'static,
+    S::Future: Send + 'static,
+    S::Response: Send + 'static,
+    S::Error: Send + 'static,
+    Request: 'static,
+{
+    type Item = Result<Change<K, AdaptiveEndpoint<S>>, D::Error>;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let this = self.get_mut();
+        Pin::new(&mut this.inner).try_poll_next(cx).map(|change| {
+            change.map(|result| {
+                result.map(|change| match change {
+                    Change::Insert(key, service) => {
+                        Change::Insert(key, AdaptiveEndpoint::new(service, this.config.clone()))
+                    }
+                    Change::Remove(key) => Change::Remove(key),
+                })
+            })
+        })
     }
 }
 
@@ -131,12 +188,15 @@ where
     type Future = ResponseFuture<S::Response, S::Error>;
 
     fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        let available = self
-            .shared
-            .controller
-            .lock()
-            .expect("controller mutex poisoned")
-            .may_schedule();
+        let available = {
+            let mut controller = self
+                .shared
+                .controller
+                .lock()
+                .expect("controller mutex poisoned");
+            controller.refresh(Instant::now());
+            controller.may_schedule()
+        };
 
         if available {
             return Poll::Ready(Ok(()));
@@ -146,13 +206,16 @@ where
 
         // Recheck after registering to avoid missing a completion/cancellation
         // that raced with the first check.
-        if self
-            .shared
-            .controller
-            .lock()
-            .expect("controller mutex poisoned")
-            .may_schedule()
-        {
+        let available = {
+            let mut controller = self
+                .shared
+                .controller
+                .lock()
+                .expect("controller mutex poisoned");
+            controller.refresh(Instant::now());
+            controller.may_schedule()
+        };
+        if available {
             Poll::Ready(Ok(()))
         } else {
             Poll::Pending
@@ -261,27 +324,18 @@ where
         .reservation
         .expect("request guard must begin with a reservation");
 
-    let active = loop {
+    loop {
         let notified = shared.dispatch.notified();
         let decision = {
-            shared
-                .controller
-                .lock()
-                .expect("controller mutex poisoned")
-                .dispatch_state(reservation, Instant::now())
+            let mut controller = shared.controller.lock().expect("controller mutex poisoned");
+            let now = Instant::now();
+            controller.refresh(now);
+            controller.dispatch_state(reservation, now)
         };
 
         match decision {
             DispatchState::Ready => {
-                let now = Instant::now();
-                let active = shared
-                    .controller
-                    .lock()
-                    .expect("controller mutex poisoned")
-                    .on_dispatched(reservation, now)
-                    .expect("dispatch state changed unexpectedly");
-                guard.mark_dispatched(active);
-                break active;
+                break;
             }
             DispatchState::WaitUntil(deadline) => {
                 let delay = deadline.saturating_duration_since(Instant::now());
@@ -297,13 +351,30 @@ where
                 panic!("an AdaptiveEndpoint request was cancelled while being polled");
             }
         }
-    };
+    }
 
     let result = {
         let mut inner = shared.inner.lock().await;
         match std::future::poll_fn(|cx| inner.poll_ready(cx)).await {
-            Ok(()) => inner.call(request).await,
-            Err(error) => Err(error),
+            Ok(()) => {
+                let now = Instant::now();
+                let active = shared
+                    .controller
+                    .lock()
+                    .expect("controller mutex poisoned")
+                    .on_dispatched(reservation, now)
+                    .expect("dispatch state changed unexpectedly");
+                guard.mark_dispatched(active);
+                inner.call(request).await
+            }
+            Err(error) => {
+                shared
+                    .controller
+                    .lock()
+                    .expect("controller mutex poisoned")
+                    .on_admission_failure(Instant::now());
+                Err(error)
+            }
         }
     };
 
@@ -313,7 +384,6 @@ where
         Outcome::Failure
     };
     let now = Instant::now();
-    let _ = active;
     guard.finish(outcome, now);
     result
 }
