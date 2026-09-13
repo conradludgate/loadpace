@@ -28,21 +28,25 @@ impl LoadMetric {
 
 #[derive(Debug, Default)]
 struct ReadyWaker {
-    waker: Mutex<Option<Waker>>,
+    wakers: Mutex<Vec<Waker>>,
 }
 
 impl ReadyWaker {
     fn register(&self, waker: &Waker) {
-        *self.waker.lock().expect("ready waker mutex poisoned") = Some(waker.clone());
+        self.wakers
+            .lock()
+            .expect("ready waker mutex poisoned")
+            .push(waker.clone());
     }
 
     fn wake(&self) {
-        if let Some(waker) = self
-            .waker
+        let wakers = self
+            .wakers
             .lock()
             .expect("ready waker mutex poisoned")
-            .take()
-        {
+            .drain(..)
+            .collect::<Vec<_>>();
+        for waker in wakers {
             waker.wake();
         }
     }
@@ -51,6 +55,7 @@ impl ReadyWaker {
 struct Shared<S> {
     inner: tokio::sync::Mutex<S>,
     controller: Mutex<EndpointController>,
+    readiness_reservations: Mutex<usize>,
     ready: ReadyWaker,
     dispatch: tokio::sync::Notify,
 }
@@ -64,6 +69,7 @@ struct Shared<S> {
 /// never contaminates the RTT sample.
 pub struct AdaptiveEndpoint<S> {
     shared: Arc<Shared<S>>,
+    readiness_reserved: bool,
 }
 
 impl<S> AdaptiveEndpoint<S> {
@@ -76,9 +82,11 @@ impl<S> AdaptiveEndpoint<S> {
             shared: Arc::new(Shared {
                 inner: tokio::sync::Mutex::new(inner),
                 controller: Mutex::new(EndpointController::new(config, now)),
+                readiness_reservations: Mutex::new(0),
                 ready: ReadyWaker::default(),
                 dispatch: tokio::sync::Notify::new(),
             }),
+            readiness_reserved: false,
         }
     }
 
@@ -163,6 +171,21 @@ impl<S> Clone for AdaptiveEndpoint<S> {
     fn clone(&self) -> Self {
         Self {
             shared: Arc::clone(&self.shared),
+            readiness_reserved: false,
+        }
+    }
+}
+
+impl<S> Drop for AdaptiveEndpoint<S> {
+    fn drop(&mut self) {
+        if self.readiness_reserved {
+            let mut reservations = self
+                .shared
+                .readiness_reservations
+                .lock()
+                .expect("readiness mutex poisoned");
+            *reservations -= 1;
+            self.shared.ready.wake();
         }
     }
 }
@@ -188,17 +211,7 @@ where
     type Future = ResponseFuture<S::Response, S::Error>;
 
     fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        let available = {
-            let mut controller = self
-                .shared
-                .controller
-                .lock()
-                .expect("controller mutex poisoned");
-            controller.refresh(Instant::now());
-            controller.may_schedule()
-        };
-
-        if available {
+        if self.readiness_reserved {
             return Poll::Ready(Ok(()));
         }
 
@@ -207,15 +220,26 @@ where
         // Recheck after registering to avoid missing a completion/cancellation
         // that raced with the first check.
         let available = {
+            let mut reservations = self
+                .shared
+                .readiness_reservations
+                .lock()
+                .expect("readiness mutex poisoned");
             let mut controller = self
                 .shared
                 .controller
                 .lock()
                 .expect("controller mutex poisoned");
             controller.refresh(Instant::now());
-            controller.may_schedule()
+            let available =
+                *reservations + controller.queued() < controller.config().queue_capacity;
+            if available {
+                *reservations += 1;
+            }
+            available
         };
         if available {
+            self.readiness_reserved = true;
             Poll::Ready(Ok(()))
         } else {
             Poll::Pending
@@ -223,13 +247,23 @@ where
     }
 
     fn call(&mut self, request: Request) -> Self::Future {
+        assert!(
+            self.readiness_reserved,
+            "AdaptiveEndpoint::call invoked without available readiness"
+        );
+        self.readiness_reserved = false;
+        *self
+            .shared
+            .readiness_reservations
+            .lock()
+            .expect("readiness mutex poisoned") -= 1;
         let reservation = self
             .shared
             .controller
             .lock()
             .expect("controller mutex poisoned")
             .reserve(Instant::now())
-            .expect("AdaptiveEndpoint::call invoked without available readiness");
+            .expect("readiness reservation was not reflected in controller capacity");
 
         let guard = RequestGuard::new(Arc::clone(&self.shared), reservation);
         let future = dispatch_request(Arc::clone(&self.shared), request, guard);
