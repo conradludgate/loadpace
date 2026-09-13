@@ -3,23 +3,9 @@
 This is the lookup-oriented reference for the current public controller API.
 For reasons behind the design, see [the explanation](../explanation/design.md).
 
-The crate targets the Rust 2024 Edition and requires Rust 1.85 or newer.
-
-## Feature flags
-
-The `tower` feature is enabled by default.
-
-| Feature | Provides |
-| --- | --- |
-| no feature | Controller primitives and deterministic simulator |
-| `tower` | `AdaptiveEndpoint`, `AdaptiveDiscovery`, and `LoadMetric` |
-
-Disable default features when only the runtime-independent controller is
-needed:
-
-```toml
-loadpace = { version = "0.1", default-features = false }
-```
+The crate targets the Rust 2024 Edition and requires Rust 1.85 or newer. It
+has no async-runtime or framework dependency. Framework adapters are published
+separately; see the [Tower adapter reference](tower.md).
 
 ## `EndpointConfig`
 
@@ -47,8 +33,9 @@ The builder-style methods `.queue_capacity(value)` and
 | `snapshot(now)` | Returns metrics and current controller state |
 | `refresh(now)` | Expires probes and refreshes the derived pacing rate |
 
-Reservations must be dispatched FIFO within one endpoint. The Tower adapter
-enforces this by making later response futures wait for earlier reservations.
+Reservations must be dispatched FIFO within one endpoint. Framework adapters
+should enforce this by making later response futures wait for earlier
+reservations.
 
 ## `DispatchState`
 
@@ -71,30 +58,3 @@ sample.
 The snapshot includes RTT estimates, target/effective concurrency, derived
 rates, committed and virtual TAT, queue and inflight depth, completion/failure
 counters, sample count, and active probe state.
-
-## `AdaptiveEndpoint<S>`
-
-`AdaptiveEndpoint<S>` implements:
-
-```text
-tower::Service<Request, Response = S::Response, Error = S::Error>
-tower::load::Load<Metric = LoadMetric>
-```
-
-`poll_ready` holds a bounded Tower readiness reservation. `call` creates a
-future that waits for GCRA and inner-service readiness. Actual dispatch time
-starts immediately before `S::call`, so local queue and readiness delay do not
-enter the RTT sample. Dropping the future cancels a queued reservation or
-records a dispatched request as failed.
-
-## `AdaptiveDiscovery<D, Request>`
-
-The wrapper maps discovery insertions:
-
-```text
-Change::Insert(key, service)
-    → Change::Insert(key, AdaptiveEndpoint::new(service, config.clone()))
-```
-
-Removal events pass through. Controller state is fresh after re-insertion of a
-key; state retention across discovery churn is not currently implemented.

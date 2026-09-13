@@ -1,6 +1,9 @@
 # Loadpace
 
-Adaptive client-side load balancing and backpressure for Tower services.
+Runtime-independent adaptive client-side load balancing and backpressure.
+
+The core `loadpace` crate contains the controller and simulator. Framework
+adapters are separate crates, starting with [`loadpace-tower`](https://crates.io/crates/loadpace-tower).
 
 Loadpace treats client-side load balancing as a control problem:
 
@@ -19,7 +22,7 @@ page has one primary purpose.
 
 ### Tutorial
 
-Learn by building a small paced Tower client:
+Learn by building a small paced client:
 
 - [Build a paced endpoint client](docs/tutorial.md)
 
@@ -33,10 +36,12 @@ Use these when you already know what you want to accomplish:
 
 ### Reference
 
-Look up the public types, defaults, state transitions, and feature flags:
+Look up the public types, defaults, and state transitions:
 
 - [Controller and configuration reference](docs/reference/controller.md)
+- [Tower adapter reference](docs/reference/tower.md)
 - [Rust API documentation](https://docs.rs/loadpace)
+- [Tower API documentation](https://docs.rs/loadpace-tower)
 
 ### Explanation
 
@@ -48,23 +53,32 @@ Understand the design and the reasoning behind it:
 
 Loadpace targets the Rust 2024 Edition and requires Rust 1.85 or newer.
 
-The core controller and simulator are available by default. Tower integration
-is enabled by default too, and can be disabled with `default-features = false`.
+The core controller and simulator have no async-runtime or framework
+dependency:
 
 ```toml
 [dependencies]
 loadpace = "0.1"
+```
+
+For Tower integration, add the adapter and Tower itself:
+
+```toml
+[dependencies]
+loadpace = "0.1"
+loadpace-tower = "0.1"
 tower = { version = "0.5", features = ["util"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
 
-## Minimal example
+## Minimal Tower example
 
-Wrap any suitable Tower service in an adaptive endpoint:
+Wrap any suitable Tower service in an adaptive endpoint from `loadpace-tower`:
 
 ```rust
 use std::convert::Infallible;
-use loadpace::{AdaptiveEndpoint, EndpointConfig};
+use loadpace::EndpointConfig;
+use loadpace_tower::AdaptiveEndpoint;
 use tower::{service_fn, ServiceExt};
 
 #[tokio::main]
@@ -80,12 +94,13 @@ Ok(())
 }
 ```
 
-For dynamic endpoints, use `AdaptiveDiscovery` and Tower's existing
+For dynamic endpoints, use `loadpace_tower::AdaptiveDiscovery` and Tower's existing
 `tower::balance::p2c::Balance`; see the [Tower integration guide](docs/how-to/integrate-with-tower.md).
 
 ## What the crate provides
 
-`EndpointController` is the runtime-independent core. It combines:
+The `loadpace` crate's `EndpointController` is the runtime-independent core.
+It combines:
 
 - a smoothed endpoint RTT estimate;
 - a continuous Gradient2-style operating point;
@@ -95,22 +110,22 @@ For dynamic endpoints, use `AdaptiveDiscovery` and Tower's existing
 - explicit failure and cancellation handling;
 - a bounded scheduling queue and emergency inflight cap.
 
-The optional Tower integration provides:
+The separate `loadpace-tower` crate provides:
 
 - `AdaptiveEndpoint<S>: tower::Service<Request>`;
 - a predicted completion-cost `tower::load::Load` metric;
 - `AdaptiveDiscovery`, which wraps inserted services with fresh controller state;
 - compatibility with Tower's `p2c::Balance`.
 
-The public `simulate` function provides a deterministic fixed-service-time
-simulator for comparing controller changes.
+The public `simulate` function in `loadpace` provides a deterministic
+fixed-service-time simulator for comparing controller changes.
 
 ## Backpressure guarantee
 
-An endpoint accepts work only while its configured scheduling horizon has room.
+The controller accepts work only while its configured scheduling horizon has room.
 Requests waiting for a GCRA slot have not been sent to the server. When every
-endpoint exposed by the balancer is full, Tower remains pending and upstream
-backpressure is preserved.
+endpoint exposed by an adapter is full, that adapter can keep readiness
+pending and preserve upstream backpressure.
 
 The inflight cap is intentionally a generous emergency safety valve. Normal
 control comes from GCRA pacing, not from rounding the fractional operating
@@ -131,17 +146,18 @@ The repository includes tests for:
 Run the full suite with:
 
 ```text
-cargo test --all-features --all-targets
+cargo test --workspace --all-features --all-targets
 ```
 
 ## Project status
 
-The first implementation covers the deterministic controller, Tower adapter,
-dynamic discovery mapping, P2C load metric, and simulator. Automatic probe
-scheduling, failure classification beyond inner-service errors, richer
-transport-readiness prediction, and production tuning remain active design
-areas. See [How Loadpace controls and routes work](docs/explanation/design.md)
-for the current boundaries and open questions.
+The first implementation covers the deterministic controller, simulator, and
+Tower adapter with dynamic discovery and P2C integration. Hyper and Rama
+adapters are intentionally separate future crates. Automatic probe scheduling,
+failure classification beyond adapter-level errors, richer transport-readiness
+prediction, and production tuning remain active design areas. See [How Loadpace
+controls and routes work](docs/explanation/design.md) for the current
+boundaries and open questions.
 
 ## License
 

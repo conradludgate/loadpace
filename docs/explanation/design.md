@@ -71,9 +71,9 @@ The endpoint queue is a small scheduling horizon, not an overload buffer. A
 queued request has not been sent to the server. Once the endpoint's horizon is
 full, `poll_ready` is pending.
 
-The Tower adapter also coordinates readiness reservations across clones. This
-preserves the Service readiness contract while preventing two clones from
-both believing they own the final local slot.
+A framework adapter such as `loadpace-tower` also coordinates readiness
+reservations across clones. This preserves the Service readiness contract
+while preventing two clones from both believing they own the final local slot.
 
 The generous inflight cap handles pathological cases such as stuck requests,
 severe latency jumps, stale estimates, broken transports, or pacing bugs. It
@@ -81,8 +81,8 @@ is not intended to replace GCRA in normal operation.
 
 ## Predicted completion cost and P2C
 
-Tower's P2C balancer samples two ready endpoints. Loadpace supplies a metric
-that approximates the completion time of appending one more request:
+Tower's P2C balancer samples two ready endpoints. `loadpace-tower` supplies a
+metric that approximates the completion time of appending one more request:
 
 ```text
 predicted completion = virtual queue-tail dispatch + expected RTT
@@ -106,12 +106,13 @@ causing a dominant client to yield more absolute capacity. A probe does not
 permanently assign ownership; normal feedback decides what remains sustainable.
 
 `ProbeSchedule` accepts a caller-provided RNG. This makes production entropy
-and deterministic simulation equally possible. The current adapter exposes
-probe control but does not run a hidden background probe task.
+and deterministic simulation equally possible. The current framework adapter
+exposes probe control but does not run a hidden background probe task.
 
 ## Discovery lifecycle
 
-When a service is inserted, `AdaptiveDiscovery` creates fresh controller state.
+When a service is inserted, the Tower adapter's `AdaptiveDiscovery` creates
+fresh controller state.
 When it is removed, Tower stops selecting it. Existing response futures hold
 their shared endpoint state long enough to complete or cancel, while a later
 re-insertion starts with clean estimates.
@@ -138,7 +139,7 @@ The first implementation intentionally leaves several decisions open:
 - Gradient2 constants and smoothing policy need workload validation.
 - The best RTT estimate for Little's Law may differ by service class.
 - Probe duration, backoff, and interaction with Gradient2 need more simulation.
-- Transport readiness is handled correctly but is not yet part of the load prediction.
+- Transport readiness is handled correctly by the adapter but is not yet part of the load prediction.
 - The simulator uses fixed service times rather than a full network model.
 - Automatic response classification beyond inner errors is application-specific.
 

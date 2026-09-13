@@ -1,7 +1,19 @@
 # Integrate dynamic discovery with Tower P2C
 
 Use this guide when you already have a Tower discovery stream and want
-Loadpace to adapt each discovered endpoint before Tower balances requests.
+`loadpace-tower` to adapt each discovered endpoint before Tower balances
+requests.
+
+## Add the adapter
+
+Add the core crate, Tower adapter, and the Tower features used by your client:
+
+```toml
+[dependencies]
+loadpace = "0.1"
+loadpace-tower = "0.1"
+tower = { version = "0.5", features = ["balance"] }
+```
 
 ## Wrap the discovery stream
 
@@ -15,7 +27,8 @@ Insertions create a new endpoint controller. Removals are passed through
 unchanged.
 
 ```rust
-use loadpace::{AdaptiveDiscovery, EndpointConfig};
+use loadpace::EndpointConfig;
+use loadpace_tower::AdaptiveDiscovery;
 use tower::balance::p2c::Balance;
 
 let adaptive = AdaptiveDiscovery::<_, Request>::new(

@@ -11,13 +11,14 @@ Create a binary crate and add these dependencies:
 ```text
 cargo new paced-client
 cd paced-client
-cargo add loadpace --features tower
+cargo add loadpace
+cargo add loadpace-tower
 cargo add tower --features util
 cargo add tokio --features macros,rt-multi-thread
 ```
 
-The `tower` feature enables `AdaptiveEndpoint`. Tower's `util` feature gives
-us `service_fn` and `ServiceExt` for this tutorial.
+The `loadpace-tower` crate provides `AdaptiveEndpoint`. Tower's `util` feature
+gives us `service_fn` and `ServiceExt` for this tutorial.
 
 ## Wrap a service
 
@@ -26,7 +27,8 @@ Replace `src/main.rs` with:
 ```rust
 use std::convert::Infallible;
 
-use loadpace::{AdaptiveEndpoint, EndpointConfig};
+use loadpace::EndpointConfig;
+use loadpace_tower::AdaptiveEndpoint;
 use tower::{service_fn, ServiceExt};
 
 #[tokio::main]

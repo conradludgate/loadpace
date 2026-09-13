@@ -14,10 +14,10 @@ jobs:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all -- --check
-      - run: cargo check --no-default-features --lib
-      - run: cargo test --no-default-features --all-targets
-      - run: cargo clippy --all-features --all-targets -- -D warnings
-      - run: cargo test --all-features --all-targets
-      - run: cargo doc --no-deps --all-features
+      - run: cargo check --workspace --no-default-features --lib
+      - run: cargo test --workspace --no-default-features --all-targets
+      - run: cargo clippy --workspace --all-features --all-targets -- -D warnings
+      - run: cargo test --workspace --all-features --all-targets
+      - run: cargo doc --workspace --no-deps --all-features
         env:
           RUSTDOCFLAGS: -D warnings
