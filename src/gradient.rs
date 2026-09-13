@@ -77,10 +77,17 @@ impl Gradient2 {
     pub fn on_rtt(&mut self, rtt: Duration, baseline: Duration) {
         let rtt = rtt.as_secs_f64().max(f64::MIN_POSITIVE);
         let baseline = baseline.as_secs_f64().max(f64::MIN_POSITIVE);
-        let gradient = (baseline / rtt).clamp(0.0, 1.0);
-        let error = gradient - self.config.tolerance.recip();
-
-        self.concurrency = (self.concurrency + self.config.gain * error)
+        // The tolerance is a headroom multiplier: a response at or below the
+        // baseline is an additive-increase opportunity, while an inflated RTT
+        // produces a multiplicative decrease proportional to the inflation.
+        let gradient = (baseline * self.config.tolerance / rtt).clamp(0.0, 4.0);
+        if gradient >= 1.0 {
+            self.concurrency += self.config.gain;
+        } else {
+            self.concurrency -= self.config.gain * (1.0 - gradient) * self.concurrency;
+        }
+        self.concurrency = self
+            .concurrency
             .clamp(self.config.min_concurrency, self.config.max_concurrency);
         self.last_gradient = gradient;
         self.updates += 1;
@@ -106,4 +113,3 @@ impl Gradient2 {
         self.updates
     }
 }
-
