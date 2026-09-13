@@ -271,9 +271,7 @@ impl<T, E> Future for ResponseFuture<T, E> {
     type Output = Result<T, E>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        // `ResponseFuture` does not move after being pinned, and the boxed
-        // future is itself pinned.
-        unsafe { self.get_unchecked_mut() }.inner.as_mut().poll(cx)
+        self.get_mut().inner.as_mut().poll(cx)
     }
 }
 
