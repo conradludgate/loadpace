@@ -48,6 +48,7 @@ impl Gradient2 {
         assert!(
             config.min_concurrency.is_finite()
                 && config.min_concurrency > 0.0
+                && config.max_concurrency.is_finite()
                 && config.max_concurrency >= config.min_concurrency,
             "Gradient2 concurrency bounds must be finite and ordered"
         );
@@ -57,8 +58,11 @@ impl Gradient2 {
             "initial concurrency must be within the Gradient2 bounds"
         );
         assert!(
-            config.tolerance >= 1.0 && config.gain.is_finite() && config.gain > 0.0,
-            "Gradient2 tolerance must be >= 1 and gain must be positive"
+            config.tolerance.is_finite()
+                && config.tolerance >= 1.0
+                && config.gain.is_finite()
+                && config.gain > 0.0,
+            "Gradient2 tolerance must be finite and >= 1 and gain must be positive"
         );
         assert!(
             (0.0..=1.0).contains(&config.failure_factor) && config.failure_factor > 0.0,

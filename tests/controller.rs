@@ -56,6 +56,26 @@ fn latency_estimator_keeps_short_and_long_views() {
 }
 
 #[test]
+#[should_panic(expected = "minimum RTT must be positive")]
+fn latency_estimator_rejects_a_zero_minimum_rtt() {
+    LatencyEstimator::new(LatencyEstimatorConfig {
+        initial_rtt: Duration::ZERO,
+        short_alpha: 1.0,
+        long_alpha: 1.0,
+        min_rtt: Duration::ZERO,
+    });
+}
+
+#[test]
+#[should_panic(expected = "bounds must be finite")]
+fn gradient2_rejects_an_infinite_upper_bound() {
+    Gradient2::new(Gradient2Config {
+        max_concurrency: f64::INFINITY,
+        ..Gradient2Config::default()
+    });
+}
+
+#[test]
 fn gradient2_preserves_fractional_concurrency_and_reacts_to_congestion() {
     let mut gradient = Gradient2::new(Gradient2Config {
         initial_concurrency: 1.3,

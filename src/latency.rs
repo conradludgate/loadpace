@@ -39,6 +39,7 @@ pub struct LatencyEstimator {
 
 impl LatencyEstimator {
     pub fn new(config: LatencyEstimatorConfig) -> Self {
+        assert!(!config.min_rtt.is_zero(), "minimum RTT must be positive");
         assert!(
             config.initial_rtt >= config.min_rtt,
             "initial RTT must not be below the minimum RTT"
