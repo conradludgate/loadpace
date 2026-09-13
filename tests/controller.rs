@@ -124,6 +124,21 @@ fn controller_can_drive_seeded_stochastic_probes() {
 }
 
 #[test]
+#[should_panic(expected = "probe probabilities")]
+fn probe_schedule_rejects_probabilities_that_exceed_one() {
+    let now = at_zero();
+    let mut state = ProbeState::new();
+    let schedule = ProbeSchedule {
+        positive_probability: 0.8,
+        negative_probability: 0.3,
+        ..ProbeSchedule::default()
+    };
+    let mut rng = rand::rngs::StdRng::seed_from_u64(5);
+
+    schedule.maybe_start(&mut state, &mut rng, now);
+}
+
+#[test]
 fn controller_bounds_queue_and_releases_cancelled_virtual_slots() {
     let now = at_zero();
     let config = EndpointConfig::default().queue_capacity(2).max_inflight(10);
