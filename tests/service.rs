@@ -1,6 +1,7 @@
 use loadpace::{AdaptiveEndpoint, EndpointConfig, LatencyEstimatorConfig};
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
@@ -45,6 +46,7 @@ impl Service<u64> for Failing {
 struct Held {
     started: Arc<Notify>,
     release: Arc<Notify>,
+    starts: Arc<AtomicUsize>,
 }
 
 impl Service<u64> for Held {
@@ -59,7 +61,9 @@ impl Service<u64> for Held {
     fn call(&mut self, request: u64) -> Self::Future {
         let started = Arc::clone(&self.started);
         let release = Arc::clone(&self.release);
+        let starts = Arc::clone(&self.starts);
         Box::pin(async move {
+            starts.fetch_add(1, Ordering::Relaxed);
             started.notify_one();
             release.notified().await;
             Ok(request)
@@ -101,10 +105,12 @@ async fn endpoint_dispatches_and_records_a_success() {
 async fn endpoint_exposes_only_a_small_scheduling_horizon() {
     let started = Arc::new(Notify::new());
     let release = Arc::new(Notify::new());
+    let starts = Arc::new(AtomicUsize::new(0));
     let mut endpoint = AdaptiveEndpoint::new_at(
         Held {
             started: Arc::clone(&started),
             release: Arc::clone(&release),
+            starts: Arc::clone(&starts),
         },
         config(1, Duration::from_secs(1)),
         Instant::now(),
@@ -150,6 +156,35 @@ async fn endpoint_exposes_only_a_small_scheduling_horizon() {
 
     release.notify_one();
     assert_eq!(first_task.await.unwrap().unwrap(), 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn endpoint_does_not_hold_the_inner_lock_while_a_response_is_running() {
+    let started = Arc::new(Notify::new());
+    let release = Arc::new(Notify::new());
+    let starts = Arc::new(AtomicUsize::new(0));
+    let endpoint = AdaptiveEndpoint::new_at(
+        Held {
+            started: Arc::clone(&started),
+            release: Arc::clone(&release),
+            starts: Arc::clone(&starts),
+        },
+        config(2, Duration::from_micros(1)),
+        Instant::now(),
+    );
+
+    let first = tokio::spawn(endpoint.clone().oneshot(1));
+    started.notified().await;
+
+    let second = tokio::spawn(endpoint.oneshot(2));
+    while starts.load(Ordering::Relaxed) < 2 {
+        tokio::time::advance(Duration::from_micros(1)).await;
+        tokio::task::yield_now().await;
+    }
+
+    release.notify_waiters();
+    assert_eq!(first.await.unwrap().unwrap(), 1);
+    assert_eq!(second.await.unwrap().unwrap(), 2);
 }
 
 #[tokio::test(start_paused = true)]

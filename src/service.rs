@@ -365,7 +365,9 @@ where
                     .on_dispatched(reservation, now)
                     .expect("dispatch state changed unexpectedly");
                 guard.mark_dispatched(active);
-                inner.call(request).await
+                let future = inner.call(request);
+                drop(inner);
+                future.await
             }
             Err(error) => {
                 shared
