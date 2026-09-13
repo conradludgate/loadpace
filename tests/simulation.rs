@@ -1,0 +1,57 @@
+use loadpace::{
+    simulate, EndpointConfig, Gradient2Config, LatencyEstimatorConfig, SimulatedEndpoint,
+    SimulationConfig,
+};
+use std::time::Duration;
+
+fn endpoint(queue_capacity: usize, service_time: Duration) -> SimulatedEndpoint {
+    SimulatedEndpoint {
+        config: EndpointConfig {
+            queue_capacity,
+            max_inflight: 16,
+            latency: LatencyEstimatorConfig {
+                initial_rtt: service_time,
+                short_alpha: 1.0,
+                long_alpha: 1.0,
+                min_rtt: service_time,
+            },
+            gradient: Gradient2Config {
+                initial_concurrency: 1.0,
+                max_concurrency: 100.0,
+                ..Gradient2Config::default()
+            },
+        },
+        service_time,
+    }
+}
+
+#[test]
+fn simulator_keeps_offered_load_bounded_by_the_endpoint_horizon() {
+    let report = simulate(SimulationConfig {
+        duration: Duration::from_millis(300),
+        offered_rate: 100.0,
+        endpoints: vec![endpoint(2, Duration::from_millis(100))],
+        seed: 7,
+    });
+
+    assert!(report.offered > report.accepted);
+    assert!(report.backpressured > 0);
+    assert!(report.max_queued <= 2);
+    assert!(report.accepted - report.dispatched <= 2);
+}
+
+#[test]
+fn simulator_uses_predicted_cost_to_shift_work_to_a_faster_endpoint() {
+    let report = simulate(SimulationConfig {
+        duration: Duration::from_secs(2),
+        offered_rate: 20.0,
+        endpoints: vec![
+            endpoint(4, Duration::from_millis(10)),
+            endpoint(4, Duration::from_millis(100)),
+        ],
+        seed: 42,
+    });
+
+    assert!(report.endpoints[0].dispatched > report.endpoints[1].dispatched);
+    assert!(report.endpoints[0].snapshot.expected_rtt < report.endpoints[1].snapshot.expected_rtt);
+}

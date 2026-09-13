@@ -9,6 +9,7 @@ mod gcra;
 mod gradient;
 mod latency;
 mod probe;
+mod simulator;
 
 #[cfg(feature = "tower")]
 mod service;
@@ -21,9 +22,12 @@ pub use gcra::{Gcra, GcraReservation};
 pub use gradient::{Gradient2, Gradient2Config};
 pub use latency::{LatencyEstimator, LatencyEstimatorConfig};
 pub use probe::{Probe, ProbeKind, ProbeSchedule, ProbeState};
+pub use simulator::{
+    simulate, EndpointReport, SimulatedEndpoint, SimulationConfig, SimulationReport,
+};
 
 #[cfg(feature = "tower")]
-pub use service::{AdaptiveEndpoint, LoadMetric, ResponseFuture};
+pub use service::{AdaptiveDiscovery, AdaptiveEndpoint, LoadMetric, ResponseFuture};
 
 /// A small error used by callers that want to model rejected scheduling
 /// explicitly in a simulator or their own adapter.
