@@ -325,6 +325,11 @@ where
 
     loop {
         let notified = shared.dispatch.notified();
+        let mut notified = std::pin::pin!(notified);
+        // Register before inspecting controller state. Otherwise a
+        // notification between the state check and the first poll could be
+        // lost, leaving this request asleep indefinitely.
+        notified.as_mut().enable();
         let (decision, probe_until) = {
             let mut controller = shared.controller.lock().expect("controller mutex poisoned");
             let current = now();
@@ -340,10 +345,10 @@ where
             DispatchState::WaitUntil(deadline) => {
                 let wake_at = probe_until.map_or(deadline, |until| deadline.min(until));
                 let delay = wake_at.saturating_duration_since(now());
-                let _ = tokio::time::timeout(delay, notified).await;
+                let _ = tokio::time::timeout(delay, notified.as_mut()).await;
             }
             DispatchState::WaitForPrevious | DispatchState::InflightLimit => {
-                notified.await;
+                notified.as_mut().await;
             }
             DispatchState::Cancelled => {
                 panic!("an AdaptiveEndpoint request was cancelled while being polled");
