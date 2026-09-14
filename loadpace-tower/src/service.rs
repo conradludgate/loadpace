@@ -74,10 +74,7 @@ impl<S> AdaptiveEndpoint<S> {
         }
     }
 
-    fn with_controller<T>(
-        &self,
-        operation: impl FnOnce(&mut EndpointController) -> T,
-    ) -> T {
+    fn with_controller<T>(&self, operation: impl FnOnce(&mut EndpointController) -> T) -> T {
         let (result, changed) = {
             let mut controller = self
                 .shared
