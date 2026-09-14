@@ -128,6 +128,7 @@ async fn endpoint_rejects_beyond_its_scheduling_horizon() {
         third,
         Err(ServiceError::Rejected(ScheduleError::QueueFull))
     ));
+    assert_eq!(endpoint.snapshot().failures, 0);
 
     // Dropping an unpolled future must cancel its reservation immediately.
     drop(second);

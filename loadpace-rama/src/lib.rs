@@ -42,6 +42,10 @@ impl LoadMetric {
 #[derive(Debug)]
 pub enum ServiceError<E> {
     /// The request could not enter the endpoint's bounded scheduling horizon.
+    ///
+    /// This is transient endpoint backpressure, not an endpoint health
+    /// failure. A higher-level balancer should try another endpoint or
+    /// propagate backpressure upstream rather than ejecting this endpoint.
     Rejected(ScheduleError),
     /// The wrapped Rama service returned an error.
     Inner(E),

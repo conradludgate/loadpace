@@ -41,3 +41,9 @@ when the endpoint boundary is known at composition time.
 the adapter also automatically drives the configured schedule when queued
 demand waits behind in-flight work. It wakes waiting dispatches when an active
 probe changes, expires, or causes a rate transition.
+
+`ServiceError::Rejected` represents transient endpoint backpressure from the
+bounded scheduling horizon. A higher-level balancer should try another
+endpoint or propagate backpressure upstream; it should not classify this as an
+endpoint health failure. `ServiceError::Inner` contains an error from work that
+was actually dispatched.
