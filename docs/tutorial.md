@@ -29,7 +29,7 @@ use std::convert::Infallible;
 
 use loadpace::EndpointConfig;
 use loadpace_tower::AdaptiveEndpoint;
-use tower::{service_fn, ServiceExt};
+use tower::{service_fn, Service, ServiceExt};
 
 #[tokio::main]
 async fn main() -> Result<(), Infallible> {
@@ -69,8 +69,8 @@ Keep the endpoint in a variable rather than consuming it if you want to read
 its metrics:
 
 ```rust
-let endpoint = AdaptiveEndpoint::new(service, EndpointConfig::default());
-let response = endpoint.clone().oneshot(request).await?;
+let mut endpoint = AdaptiveEndpoint::new(service, EndpointConfig::default());
+let response = endpoint.ready().await?.call(request).await?;
 let snapshot = endpoint.snapshot();
 
 println!("response: {response:?}");

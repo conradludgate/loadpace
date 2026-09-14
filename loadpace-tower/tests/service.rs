@@ -6,7 +6,7 @@ use std::pin::Pin;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::task::{Context, Poll};
+use std::task::{Context, Poll, Wake};
 use std::time::{Duration, Instant};
 use tokio::sync::Notify;
 use tower::{Layer, Service, ServiceExt};
@@ -100,6 +100,14 @@ impl Service<u64> for LocalEcho {
 struct ReadyGate {
     open: AtomicBool,
     waker: futures_util::task::AtomicWaker,
+}
+
+struct WakeFlag(AtomicBool);
+
+impl Wake for WakeFlag {
+    fn wake(self: Arc<Self>) {
+        self.0.store(true, Ordering::Release);
+    }
 }
 
 impl ReadyGate {
@@ -216,9 +224,9 @@ async fn endpoint_does_not_require_send_response_or_error_types() {
 #[tokio::test(start_paused = true)]
 async fn endpoint_dispatches_and_records_a_success() {
     let now = Instant::now();
-    let endpoint = AdaptiveEndpoint::new_at(Echo, config(2, Duration::from_millis(1)), now);
+    let mut endpoint = AdaptiveEndpoint::new_at(Echo, config(2, Duration::from_millis(1)), now);
 
-    let response = endpoint.clone().oneshot(42).await.unwrap();
+    let response = endpoint.ready().await.unwrap().call(42).await.unwrap();
     assert_eq!(response, 42);
 
     let snapshot = endpoint.snapshot();
@@ -291,7 +299,7 @@ async fn endpoint_does_not_hold_the_inner_lock_while_a_response_is_running() {
     let started = Arc::new(Notify::new());
     let release = Arc::new(Notify::new());
     let starts = Arc::new(AtomicUsize::new(0));
-    let endpoint = AdaptiveEndpoint::new_at(
+    let mut endpoint = AdaptiveEndpoint::new_at(
         Held {
             started: Arc::clone(&started),
             release: Arc::clone(&release),
@@ -301,10 +309,10 @@ async fn endpoint_does_not_hold_the_inner_lock_while_a_response_is_running() {
         Instant::now(),
     );
 
-    let first = tokio::spawn(endpoint.clone().oneshot(1));
+    let first = tokio::spawn(endpoint.ready().await.unwrap().call(1));
     started.notified().await;
 
-    let second = tokio::spawn(endpoint.oneshot(2));
+    let second = tokio::spawn(endpoint.ready().await.unwrap().call(2));
     while starts.load(Ordering::Relaxed) < 2 {
         tokio::time::advance(Duration::from_micros(1)).await;
         tokio::task::yield_now().await;
@@ -317,13 +325,16 @@ async fn endpoint_does_not_hold_the_inner_lock_while_a_response_is_running() {
 
 #[tokio::test(start_paused = true)]
 async fn endpoint_failures_are_not_treated_as_fast_healthy_work() {
-    let endpoint = AdaptiveEndpoint::new_at(
+    let mut endpoint = AdaptiveEndpoint::new_at(
         Failing,
         config(2, Duration::from_millis(10)),
         Instant::now(),
     );
 
-    assert_eq!(endpoint.clone().oneshot(1).await, Err("overloaded"));
+    assert_eq!(
+        endpoint.ready().await.unwrap().call(1).await,
+        Err("overloaded")
+    );
     let snapshot = endpoint.snapshot();
     assert_eq!(snapshot.failures, 1);
     assert!(snapshot.target_concurrency < 1.0);
@@ -344,7 +355,7 @@ async fn automatic_positive_probe_wakes_a_queued_dispatch() {
         duration: Duration::from_secs(1),
         ..ProbeSchedule::default()
     };
-    let endpoint = AdaptiveEndpoint::new_at(
+    let mut endpoint = AdaptiveEndpoint::new_at(
         Held {
             started: Arc::clone(&started),
             release: Arc::clone(&release),
@@ -354,11 +365,11 @@ async fn automatic_positive_probe_wakes_a_queued_dispatch() {
         now,
     );
 
-    let first = tokio::spawn(endpoint.clone().oneshot(1));
+    let first = tokio::spawn(endpoint.ready().await.unwrap().call(1));
     started.notified().await;
     tokio::time::advance(Duration::from_millis(100)).await;
 
-    let second = tokio::spawn(endpoint.clone().oneshot(2));
+    let second = tokio::spawn(endpoint.ready().await.unwrap().call(2));
     while endpoint.snapshot().queued != 1 {
         tokio::task::yield_now().await;
     }
@@ -394,7 +405,7 @@ async fn automatic_negative_probe_expiry_wakes_a_dispatch_to_recompute_the_slowe
         duration: Duration::from_millis(200),
         ..ProbeSchedule::default()
     };
-    let endpoint = AdaptiveEndpoint::new_at(
+    let mut endpoint = AdaptiveEndpoint::new_at(
         Held {
             started: Arc::clone(&started),
             release: Arc::clone(&release),
@@ -404,11 +415,11 @@ async fn automatic_negative_probe_expiry_wakes_a_dispatch_to_recompute_the_slowe
         now,
     );
 
-    let first = tokio::spawn(endpoint.clone().oneshot(1));
+    let first = tokio::spawn(endpoint.ready().await.unwrap().call(1));
     started.notified().await;
     tokio::time::advance(Duration::from_millis(100)).await;
 
-    let second = tokio::spawn(endpoint.clone().oneshot(2));
+    let second = tokio::spawn(endpoint.ready().await.unwrap().call(2));
     while endpoint.snapshot().queued != 1 {
         tokio::task::yield_now().await;
     }
@@ -444,7 +455,7 @@ async fn queued_demand_drives_automatic_probing() {
         duration: Duration::from_millis(100),
         ..ProbeSchedule::default()
     };
-    let endpoint = AdaptiveEndpoint::new_at(
+    let mut endpoint = AdaptiveEndpoint::new_at(
         Held {
             started: Arc::clone(&started),
             release: Arc::clone(&release),
@@ -454,9 +465,9 @@ async fn queued_demand_drives_automatic_probing() {
         Instant::now(),
     );
 
-    let first = tokio::spawn(endpoint.clone().oneshot(1));
+    let first = tokio::spawn(endpoint.ready().await.unwrap().call(1));
     started.notified().await;
-    let second = tokio::spawn(endpoint.clone().oneshot(2));
+    let second = tokio::spawn(endpoint.ready().await.unwrap().call(2));
     tokio::time::advance(Duration::from_secs(1)).await;
     while endpoint.snapshot().active_probe.is_none() {
         tokio::task::yield_now().await;
@@ -486,52 +497,18 @@ async fn dropping_a_queued_response_releases_its_slot() {
         Poll::Ready(Ok(()))
     ));
     let queued = endpoint.call(1);
+    let wake_flag = Arc::new(WakeFlag(AtomicBool::new(false)));
+    let waker = Arc::clone(&wake_flag).into();
     assert!(matches!(
-        Service::poll_ready(
-            &mut endpoint,
-            &mut Context::from_waker(futures_util::task::noop_waker_ref())
-        ),
+        Service::poll_ready(&mut endpoint, &mut Context::from_waker(&waker)),
         Poll::Pending
     ));
 
     drop(queued);
+    assert!(wake_flag.0.load(Ordering::Acquire));
     assert!(matches!(
         Service::poll_ready(
             &mut endpoint,
-            &mut Context::from_waker(futures_util::task::noop_waker_ref())
-        ),
-        Poll::Ready(Ok(()))
-    ));
-}
-
-#[tokio::test(start_paused = true)]
-async fn readiness_capacity_is_shared_across_clones() {
-    let mut first =
-        AdaptiveEndpoint::new_at(Echo, config(1, Duration::from_secs(1)), Instant::now());
-    let mut second = first.clone();
-
-    assert!(matches!(
-        Service::poll_ready(
-            &mut first,
-            &mut Context::from_waker(futures_util::task::noop_waker_ref())
-        ),
-        Poll::Ready(Ok(()))
-    ));
-    assert!(matches!(
-        Service::poll_ready(
-            &mut second,
-            &mut Context::from_waker(futures_util::task::noop_waker_ref())
-        ),
-        Poll::Pending
-    ));
-
-    // Dropping a readiness reservation returns the same permit that wakes
-    // other clones, without requiring a shared list of task wakers.
-    drop(first);
-
-    assert!(matches!(
-        Service::poll_ready(
-            &mut second,
             &mut Context::from_waker(futures_util::task::noop_waker_ref())
         ),
         Poll::Ready(Ok(()))
@@ -541,7 +518,7 @@ async fn readiness_capacity_is_shared_across_clones() {
 #[tokio::test(start_paused = true)]
 async fn cancelling_the_fifo_head_unblocks_the_next_request() {
     let gate = Arc::new(ReadyGate::new());
-    let endpoint = AdaptiveEndpoint::new_at(
+    let mut endpoint = AdaptiveEndpoint::new_at(
         ReadinessGated {
             gate: Arc::clone(&gate),
         },
@@ -549,11 +526,11 @@ async fn cancelling_the_fifo_head_unblocks_the_next_request() {
         Instant::now(),
     );
 
-    let first = tokio::spawn(endpoint.clone().oneshot(1));
+    let first = tokio::spawn(endpoint.ready().await.unwrap().call(1));
     while endpoint.snapshot().queued != 1 {
         tokio::task::yield_now().await;
     }
-    let second = tokio::spawn(endpoint.clone().oneshot(2));
+    let second = tokio::spawn(endpoint.ready().await.unwrap().call(2));
     while endpoint.snapshot().queued != 2 {
         tokio::task::yield_now().await;
     }

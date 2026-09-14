@@ -23,11 +23,17 @@ tower::Service<Request, Response = S::Response, Error = S::Error>
 tower::load::Load<Metric = LoadMetric>
 ```
 
-`poll_ready` holds a bounded Tower readiness reservation. `call` creates a
-future that waits for GCRA and inner-service readiness. Actual dispatch time
-starts immediately before `S::call`, so local queue and readiness delay do not
-enter the RTT sample. Dropping the future cancels a queued reservation or
-records a dispatched request as failed.
+`poll_ready` reports bounded admission readiness. `call` creates a future that
+waits for GCRA and inner-service readiness. Actual dispatch time starts
+immediately before `S::call`, so local queue and readiness delay do not enter
+the RTT sample. Dropping the future cancels a queued reservation or records a
+dispatched request as failed.
+
+The endpoint is not `Clone`. Tower's P2C balancer owns one mutable service per
+discovered backend and does not require its endpoint services to be cloneable.
+Keeping that ownership explicit also lets the adapter coordinate its single
+readiness waiter directly with controller state, without a shared admission
+semaphore.
 
 `AdaptiveLayer` wraps a service in an endpoint and can be used directly in a
 `tower::ServiceBuilder` stack. The inner service needs to be `Send`, but does

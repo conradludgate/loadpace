@@ -86,9 +86,11 @@ The endpoint queue is a small scheduling horizon, not an overload buffer. A
 queued request has not been sent to the server. Once the endpoint's horizon is
 full, `poll_ready` is pending.
 
-A framework adapter such as `loadpace-tower` also coordinates readiness
-reservations across clones. This preserves the Service readiness contract
-while preventing two clones from both believing they own the final local slot.
+`loadpace-tower` keeps each endpoint single-owner, matching Tower's P2C
+balancer, which owns one mutable service per discovered backend. Consequently
+there can be only one `poll_ready` waiter for an endpoint. The adapter can
+register that task's waker alongside controller state instead of maintaining a
+separate shared semaphore solely to coordinate cloned handles.
 
 The generous inflight cap handles pathological cases such as stuck requests,
 severe latency jumps, stale estimates, broken transports, or pacing bugs. It

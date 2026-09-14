@@ -7,9 +7,8 @@ use pin_project_lite::pin_project;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex, MutexGuard};
-use std::task::{Context, Poll, ready};
+use std::task::{Context, Poll, Waker};
 use std::time::Instant;
-use tokio_util::sync::PollSemaphore;
 use tower::discover::Change;
 use tower::load::Load;
 use tower::{Layer, Service};
@@ -29,8 +28,35 @@ impl LoadMetric {
 
 struct Shared<S> {
     service: tokio::sync::Mutex<S>,
-    controller: Mutex<EndpointController>,
+    controller: Mutex<ControllerState>,
     dispatch: tokio::sync::Notify,
+}
+
+struct ControllerState {
+    controller: EndpointController,
+    admission_waker: Option<Waker>,
+}
+
+impl ControllerState {
+    fn poll_admission(&mut self, cx: &mut Context<'_>) -> Poll<()> {
+        if self.controller.may_schedule() {
+            self.admission_waker = None;
+            return Poll::Ready(());
+        }
+
+        if self
+            .admission_waker
+            .as_ref()
+            .is_none_or(|waker| !waker.will_wake(cx.waker()))
+        {
+            self.admission_waker = Some(cx.waker().clone());
+        }
+        Poll::Pending
+    }
+
+    fn take_admission_waker(&mut self) -> Option<Waker> {
+        self.admission_waker.take()
+    }
 }
 
 // Core deliberately uses `std::time::Instant`; Tower waits use Tokio's
@@ -53,10 +79,13 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 /// returned future waits until that slot is due, waits for the inner service to
 /// be ready, and only then records the actual dispatch. Queue delay therefore
 /// never contaminates the RTT sample.
+///
+/// The endpoint is intentionally single-owner: Tower's P2C balancer owns one
+/// service per discovered backend and does not require endpoint services to be
+/// cloneable. This lets readiness use the controller's queue state directly,
+/// without a second shared allocation for coordinating cloned handles.
 pub struct AdaptiveEndpoint<S> {
     shared: Arc<Shared<S>>,
-    admission_permit: Option<tokio::sync::OwnedSemaphorePermit>,
-    admission: PollSemaphore,
 }
 
 impl<S> AdaptiveEndpoint<S> {
@@ -65,24 +94,24 @@ impl<S> AdaptiveEndpoint<S> {
     }
 
     pub fn new_at(inner: S, config: EndpointConfig, now: Instant) -> Self {
-        let queue_capacity = config.queue_capacity;
         Self {
             shared: Arc::new(Shared {
                 service: tokio::sync::Mutex::new(inner),
-                controller: Mutex::new(EndpointController::new(config, now)),
+                controller: Mutex::new(ControllerState {
+                    controller: EndpointController::new(config, now),
+                    admission_waker: None,
+                }),
                 dispatch: tokio::sync::Notify::new(),
             }),
-            admission_permit: None,
-            admission: PollSemaphore::new(Arc::new(tokio::sync::Semaphore::new(queue_capacity))),
         }
     }
 
     fn with_controller<T>(&self, operation: impl FnOnce(&mut EndpointController) -> T) -> T {
         let (result, changed) = {
-            let mut controller = lock(&self.shared.controller);
-            let before = controller.active_probe();
-            let result = operation(&mut controller);
-            (result, before != controller.active_probe())
+            let mut state = lock(&self.shared.controller);
+            let before = state.controller.active_probe();
+            let result = operation(&mut state.controller);
+            (result, before != state.controller.active_probe())
         };
         if changed {
             self.shared.dispatch.notify_waiters();
@@ -180,18 +209,6 @@ where
     }
 }
 
-impl<S> Clone for AdaptiveEndpoint<S> {
-    fn clone(&self) -> Self {
-        Self {
-            shared: Arc::clone(&self.shared),
-            admission_permit: None,
-            // `PollSemaphore::clone` resets the per-handle acquire future but
-            // retains the same underlying `Arc<Semaphore>`.
-            admission: self.admission.clone(),
-        }
-    }
-}
-
 impl<S> Load for AdaptiveEndpoint<S> {
     type Metric = LoadMetric;
 
@@ -211,30 +228,22 @@ where
     type Future = ResponseFuture<S::Response, S::Error>;
 
     fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        if self.admission_permit.is_some() {
-            return Poll::Ready(Ok(()));
+        let mut state = lock(&self.shared.controller);
+        match state.poll_admission(cx) {
+            Poll::Ready(()) => Poll::Ready(Ok(())),
+            Poll::Pending => Poll::Pending,
         }
-
-        // The adapter owns every handle to this semaphore and never closes
-        // it, so closure would mean an internal invariant was violated.
-        let permit = ready!(self.admission.poll_acquire(cx))
-            .expect("loadpace-tower admission semaphore was closed");
-        self.admission_permit = Some(permit);
-        Poll::Ready(Ok(()))
     }
 
     fn call(&mut self, request: Request) -> Self::Future {
-        // Tower permits services to panic when `call` does not follow a
-        // successful `poll_ready` invocation.
-        let admission_permit = self
-            .admission_permit
-            .take()
-            .expect("AdaptiveEndpoint::call invoked without available readiness");
-        let reservation = lock(&self.shared.controller).reserve(now());
+        // With no endpoint clones, nothing can add another reservation between
+        // this service reporting readiness and receiving the corresponding
+        // call. Tower permits a panic if callers skip `poll_ready`.
+        let reservation = lock(&self.shared.controller).controller.reserve(now());
         let reservation =
-            reservation.expect("admission permit was not reflected in controller queue capacity");
+            reservation.expect("AdaptiveEndpoint::call invoked without available readiness");
 
-        let pending = PendingRequest::new(Arc::clone(&self.shared), reservation, admission_permit);
+        let pending = PendingRequest::new(Arc::clone(&self.shared), reservation);
         ResponseFuture {
             inner: Box::pin(pending.execute(request)),
         }
@@ -255,10 +264,7 @@ impl<T, E> Future for ResponseFuture<T, E> {
 }
 
 enum RequestState {
-    Queued {
-        reservation: DispatchReservation,
-        admission_permit: tokio::sync::OwnedSemaphorePermit,
-    },
+    Queued(DispatchReservation),
     InFlight(InFlightRequest),
     Finished,
 }
@@ -269,23 +275,16 @@ struct PendingRequest<S> {
 }
 
 impl<S> PendingRequest<S> {
-    fn new(
-        shared: Arc<Shared<S>>,
-        reservation: DispatchReservation,
-        admission_permit: tokio::sync::OwnedSemaphorePermit,
-    ) -> Self {
+    fn new(shared: Arc<Shared<S>>, reservation: DispatchReservation) -> Self {
         Self {
             shared,
-            state: RequestState::Queued {
-                reservation,
-                admission_permit,
-            },
+            state: RequestState::Queued(reservation),
         }
     }
 
     fn reservation(&self) -> DispatchReservation {
         match &self.state {
-            RequestState::Queued { reservation, .. } => *reservation,
+            RequestState::Queued(reservation) => *reservation,
             RequestState::InFlight(_) | RequestState::Finished => {
                 panic!("only a queued request has a dispatch reservation")
             }
@@ -293,9 +292,8 @@ impl<S> PendingRequest<S> {
     }
 
     fn mark_dispatched(&mut self, active: InFlightRequest) {
-        // Replacing the queued state drops its admission permit. The
-        // controller has already removed the request from its virtual queue,
-        // so the next admitted caller observes the updated capacity.
+        // The controller has already removed the request from its virtual
+        // queue, so the next admitted caller observes the updated capacity.
         self.state = RequestState::InFlight(active);
     }
 
@@ -303,16 +301,19 @@ impl<S> PendingRequest<S> {
         match std::mem::replace(&mut self.state, RequestState::Finished) {
             RequestState::InFlight(active) => {
                 let latency = now.saturating_duration_since(active.dispatched_at());
-                lock(&self.shared.controller).on_complete(active, outcome, latency, now);
+                lock(&self.shared.controller)
+                    .controller
+                    .on_complete(active, outcome, latency, now);
             }
-            RequestState::Queued {
-                reservation,
-                admission_permit,
-            } => {
-                lock(&self.shared.controller).cancel(reservation, now);
-                // Keep the permit until after cancellation updates the
-                // controller's queue count.
-                drop(admission_permit);
+            RequestState::Queued(reservation) => {
+                let admission_waker = {
+                    let mut state = lock(&self.shared.controller);
+                    state.controller.cancel(reservation, now);
+                    state.take_admission_waker()
+                };
+                if let Some(waker) = admission_waker {
+                    waker.wake();
+                }
             }
             RequestState::Finished => return,
         }
@@ -329,10 +330,13 @@ impl<S> PendingRequest<S> {
             notified.as_mut().enable();
 
             let (state, probe_changed) = {
-                let mut controller = lock(&self.shared.controller);
-                let previous_probe = controller.active_probe();
-                let state = controller.dispatch_state(reservation, now());
-                (state, previous_probe != controller.active_probe())
+                let mut shared_state = lock(&self.shared.controller);
+                let previous_probe = shared_state.controller.active_probe();
+                let state = shared_state.controller.dispatch_state(reservation, now());
+                (
+                    state,
+                    previous_probe != shared_state.controller.active_probe(),
+                )
             };
             if probe_changed {
                 self.shared.dispatch.notify_waiters();
@@ -366,10 +370,19 @@ impl<S> PendingRequest<S> {
         // becoming ready. Keep its readiness claim and wait for the revised
         // pacing deadline instead of assuming the earlier decision is stable.
         loop {
-            let dispatch = {
-                let mut controller = lock(&self.shared.controller);
-                controller.on_dispatched(self.reservation(), now())
+            let (dispatch, admission_waker) = {
+                let mut state = lock(&self.shared.controller);
+                let dispatch = state.controller.on_dispatched(self.reservation(), now());
+                let admission_waker = if dispatch.is_ok() {
+                    state.take_admission_waker()
+                } else {
+                    None
+                };
+                (dispatch, admission_waker)
             };
+            if let Some(waker) = admission_waker {
+                waker.wake();
+            }
             match dispatch {
                 Ok(active) => {
                     self.mark_dispatched(active);
@@ -393,7 +406,9 @@ impl<S> PendingRequest<S> {
         let response = match self.start(request).await {
             Ok(response) => response,
             Err(error) => {
-                lock(&self.shared.controller).on_admission_failure(now());
+                lock(&self.shared.controller)
+                    .controller
+                    .on_admission_failure(now());
                 self.finish(Outcome::Failure, now());
                 return Err(error);
             }
