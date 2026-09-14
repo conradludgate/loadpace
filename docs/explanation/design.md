@@ -1,8 +1,17 @@
 # How Loadpace controls and routes work
 
-Loadpace combines admission control and load balancing. A conventional client
-load balancer asks which endpoint should receive a request. Loadpace also asks
-whether the client should accept another request yet.
+Loadpace combines admission control and load balancing for clients talking to a
+changing fleet of services. A conventional client load balancer asks which
+endpoint should receive a request. Loadpace also asks whether the client should
+accept another request yet.
+
+This matters in systems such as proxies, gateways, and RPC clients where many
+client instances share endpoints with different sizes and workloads. A static
+limit cannot reflect each endpoint's current capacity, and an unbounded local
+queue turns overload into delayed work instead of visible backpressure.
+Loadpace gives every endpoint an independent feedback loop, so the client can
+use newly available capacity while slowing down endpoints whose latency shows
+that their work is queuing.
 
 ## Per-endpoint control
 

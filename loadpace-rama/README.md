@@ -1,7 +1,20 @@
 # loadpace-rama
 
-Rama integration for the [`loadpace`](https://crates.io/crates/loadpace)
-adaptive client-side load-balancing and backpressure controller.
+Adaptive Rama services for clients balancing requests across a changing
+fleet.
+
+## Why this adapter exists
+
+A Rama service call can be accepted locally even when the selected endpoint is
+already saturated. Static limits do not account for different endpoint
+capacities or changing workload conditions, while an unbounded queue hides
+backpressure from the caller.
+
+`loadpace-rama` wraps each service with the [`loadpace`](https://crates.io/crates/loadpace)
+controller. It keeps admission bounded, paces dispatch using the endpoint's
+learned operating point, and exposes predicted completion cost for a higher-
+level balancer. This gives Rama applications the same adaptive control as the
+Tower integration while fitting Rama's direct `serve` model.
 
 ## Usage
 

@@ -1,6 +1,27 @@
 # Loadpace
 
-Runtime-independent adaptive client-side load balancing and backpressure.
+Adaptive client-side load balancing for changing service fleets, with bounded
+backpressure.
+
+## Why Loadpace exists
+
+A conventional load balancer answers “which endpoint should receive this
+request?” A production client also needs to answer “should I accept this
+request yet?” That second question becomes difficult when client instances are
+scaled horizontally, endpoints have different capacities and latencies, and
+discovery adds or removes servers over time.
+
+Static rate or concurrency limits cannot adapt to those conditions: a limit
+that protects a small or slow endpoint can leave a larger endpoint idle, while
+a limit chosen for the larger endpoint can overwhelm the smaller one. An
+unbounded client queue hides the overload instead of applying backpressure.
+
+Loadpace gives every endpoint its own adaptive feedback loop. It learns a safe
+operating point from latency and outcomes, turns that point into a smooth
+request schedule, predicts the completion cost of newly queued work, and stops
+accepting work when its small local scheduling horizon is full. The result is
+an adaptive client-side balancer that can use changing capacity without
+flooding endpoints or hiding overload behind a queue.
 
 The core `loadpace` crate contains the controller and simulator. Framework
 adapters are separate crates, starting with [`loadpace-tower`](https://crates.io/crates/loadpace-tower)
@@ -97,14 +118,14 @@ use tower::{service_fn, ServiceExt};
 
 #[tokio::main]
 async fn main() -> Result<(), Infallible> {
-let endpoint = AdaptiveEndpoint::new(
-    service_fn(|request: u64| async move { Ok::<_, Infallible>(request * 2) }),
-    EndpointConfig::default(),
-);
+    let endpoint = AdaptiveEndpoint::new(
+        service_fn(|request: u64| async move { Ok::<_, Infallible>(request * 2) }),
+        EndpointConfig::default(),
+    );
 
-let response = endpoint.oneshot(21).await?;
-assert_eq!(response, 42);
-Ok(())
+    let response = endpoint.oneshot(21).await?;
+    assert_eq!(response, 42);
+    Ok(())
 }
 ```
 
@@ -217,7 +238,6 @@ Tower and Rama adapters. Hyper remains a separate future crate. Failure
 classification beyond adapter-level errors, richer transport-readiness
 prediction, RTT baseline aging, and production tuning remain active design areas.
 See [How Loadpace controls and routes work](docs/explanation/design.md) for the current
-boundaries and open questions.
 boundaries and open questions.
 
 ## License

@@ -1,7 +1,21 @@
 # loadpace-tower
 
-Tower adapters for [`loadpace`](https://crates.io/crates/loadpace), the
-runtime-independent adaptive client-side load-balancing controller.
+Adaptive Tower services for clients balancing requests across a changing
+fleet.
+
+## Why this adapter exists
+
+Tower's balancers decide which ready endpoint should receive a request, but a
+ready endpoint can still be the wrong place to send more work: it may already
+have a queue, its capacity may have changed, or its requests may be arriving
+faster than its service can complete them. A static limit either wastes spare
+capacity or applies the wrong limit to different endpoints.
+
+`loadpace-tower` wraps each endpoint with the [`loadpace`](https://crates.io/crates/loadpace)
+controller. It preserves Tower backpressure, paces dispatch with a per-endpoint
+GCRA schedule, and exposes predicted completion cost for P2C selection. This
+lets a dynamic discovery stream add and remove endpoints while each endpoint
+learns its own safe operating point.
 
 `loadpace-tower` provides:
 
