@@ -4,7 +4,7 @@ use loadpace::{
     Outcome,
 };
 use rand::rngs::StdRng;
-use rand::{Rng, SeedableRng};
+use rand::Rng;
 use std::future::Future;
 use std::marker::PhantomData;
 use std::pin::Pin;
@@ -77,7 +77,7 @@ impl<S> AdaptiveEndpoint<S> {
                 controller: Mutex::new(EndpointController::new(config, now)),
                 ready: Arc::new(tokio::sync::Semaphore::new(queue_capacity)),
                 dispatch: tokio::sync::Notify::new(),
-                probe_rng: Mutex::new(StdRng::from_os_rng()),
+                probe_rng: Mutex::new(rand::make_rng()),
             }),
             readiness_permit: None,
             readiness: Mutex::new(None),

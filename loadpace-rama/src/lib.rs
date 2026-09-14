@@ -14,7 +14,7 @@ use loadpace::{
 };
 use rama::{Layer, Service};
 use rand::rngs::StdRng;
-use rand::{Rng, SeedableRng};
+use rand::Rng;
 use std::error::Error;
 use std::fmt;
 use std::future::Future;
@@ -126,7 +126,7 @@ impl<S> AdaptiveEndpoint<S> {
                 inner: Arc::new(inner),
                 controller: Mutex::new(EndpointController::new(config, now)),
                 dispatch: Notify::new(),
-                probe_rng: Mutex::new(StdRng::from_os_rng()),
+                probe_rng: Mutex::new(rand::make_rng()),
             }),
         }
     }
