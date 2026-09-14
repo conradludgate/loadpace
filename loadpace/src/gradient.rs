@@ -1,3 +1,4 @@
+use crate::gcra::saturating_add;
 use std::time::{Duration, Instant};
 
 /// Parameters for the fractional Gradient2 controller.
@@ -51,6 +52,12 @@ pub struct Gradient2 {
 }
 
 impl Gradient2 {
+    /// Creates a fractional Gradient2 controller.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the concurrency bounds, tolerance, gain, smoothing,
+    /// update interval, or failure factor is invalid.
     pub fn new(config: Gradient2Config) -> Self {
         assert!(
             config.min_concurrency.is_finite()
@@ -214,10 +221,7 @@ impl Gradient2 {
             + estimate * self.config.smoothing)
             .clamp(self.config.min_concurrency, self.config.max_concurrency);
         self.updates += 1;
-        self.next_update_at = Some(
-            now.checked_add(self.config.update_interval)
-                .expect("Gradient2 update schedule overflowed Instant"),
-        );
+        self.next_update_at = Some(saturating_add(now, self.config.update_interval));
         true
     }
 
@@ -232,10 +236,7 @@ impl Gradient2 {
             .clamp(self.config.min_concurrency, self.config.max_concurrency);
         self.last_gradient = 0.0;
         self.updates += 1;
-        self.next_update_at = Some(
-            now.checked_add(self.config.update_interval)
-                .expect("Gradient2 update schedule overflowed Instant"),
-        );
+        self.next_update_at = Some(saturating_add(now, self.config.update_interval));
     }
 
     pub fn concurrency(&self) -> f64 {

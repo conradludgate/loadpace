@@ -1,3 +1,4 @@
+use crate::gcra::saturating_add;
 use std::time::{Duration, Instant};
 
 const BASELINE_BUCKETS: usize = 8;
@@ -46,6 +47,12 @@ pub struct LatencyEstimator {
 }
 
 impl LatencyEstimator {
+    /// Creates a latency estimator with the configured initial RTT.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the minimum RTT, initial RTT, EWMA weights, or baseline
+    /// window is invalid.
     pub fn new(config: LatencyEstimatorConfig) -> Self {
         assert!(!config.min_rtt.is_zero(), "minimum RTT must be positive");
         assert!(
@@ -127,11 +134,7 @@ impl LatencyEstimator {
     }
 
     fn advance_baseline_window(&mut self, now: Instant) {
-        let bucket_duration = self
-            .config
-            .baseline_window
-            .checked_div(BASELINE_BUCKETS as u32)
-            .expect("baseline window bucket duration must be representable");
+        let bucket_duration = self.config.baseline_window / BASELINE_BUCKETS as u32;
         let Some(started) = self.baseline_bucket_started else {
             self.baseline_bucket_started = Some(now);
             return;
@@ -152,11 +155,10 @@ impl LatencyEstimator {
                 self.baseline_bucket = (self.baseline_bucket + 1) % BASELINE_BUCKETS;
                 self.baseline_buckets[self.baseline_bucket] = f64::INFINITY;
             }
-            self.baseline_bucket_started = Some(
-                started
-                    .checked_add(bucket_duration.saturating_mul(steps as u32))
-                    .expect("baseline window schedule overflowed Instant"),
-            );
+            self.baseline_bucket_started = Some(saturating_add(
+                started,
+                bucket_duration.saturating_mul(steps as u32),
+            ));
         }
     }
 }

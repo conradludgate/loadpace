@@ -150,6 +150,12 @@ pub struct EndpointController {
 }
 
 impl EndpointController {
+    /// Creates an endpoint controller with an initially available slot.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the queue capacity or emergency inflight cap is zero, or
+    /// when the nested latency or Gradient2 configuration is invalid.
     pub fn new(config: EndpointConfig, now: Instant) -> Self {
         assert!(
             config.queue_capacity > 0,
@@ -157,6 +163,7 @@ impl EndpointController {
         );
         assert!(config.max_inflight > 0, "max inflight must be positive");
 
+        config.probe_schedule.validate();
         let latency = LatencyEstimator::new(config.latency.clone());
         let gradient = Gradient2::new(config.gradient.clone());
         let rate = gradient.concurrency() / latency.expected_rtt().as_secs_f64();
@@ -299,10 +306,7 @@ impl EndpointController {
             return None;
         }
 
-        let pending = self
-            .pending
-            .pop_front()
-            .expect("dispatch state checked the queue");
+        let pending = self.pending.pop_front()?;
         debug_assert_eq!(pending.id, reservation.id);
         self.queued -= 1;
         self.inflight += 1;

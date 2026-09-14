@@ -52,7 +52,7 @@ impl Gcra {
         let phase =
             self.tat.saturating_duration_since(now).as_secs_f64() / self.interval.as_secs_f64();
         self.interval = interval;
-        let remaining = Duration::from_secs_f64(phase * interval.as_secs_f64());
+        let remaining = duration_from_secs_saturating(phase * interval.as_secs_f64());
         self.tat = saturating_add(now, remaining);
     }
 
@@ -84,16 +84,29 @@ fn rate_to_interval(rate_per_second: f64) -> Duration {
     // interval to nanosecond precision: below that point a timer cannot make
     // a more useful distinction anyway.
     let seconds = 1.0 / rate_per_second;
-    assert!(
-        seconds.is_finite() && seconds <= Duration::MAX.as_secs_f64(),
-        "GCRA rate is too low to represent as a Duration"
-    );
-    let seconds = seconds.max(1e-9);
-    Duration::from_secs_f64(seconds)
+    let Ok(interval) = Duration::try_from_secs_f64(seconds) else {
+        panic!("GCRA rate is too low to represent as a Duration");
+    };
+    interval.max(Duration::from_nanos(1))
 }
 
 pub(crate) fn saturating_add(instant: Instant, duration: Duration) -> Instant {
-    instant
-        .checked_add(duration)
-        .expect("GCRA schedule overflowed Instant")
+    // `Instant` has no public maximum value. Retaining the current instant is
+    // the only representable saturation value when the platform clock range
+    // is exceeded.
+    instant.checked_add(duration).unwrap_or(instant)
+}
+
+fn duration_from_secs_saturating(seconds: f64) -> Duration {
+    if seconds.is_nan() || seconds <= 0.0 {
+        return Duration::ZERO;
+    }
+    if !seconds.is_finite() {
+        return Duration::MAX;
+    }
+
+    match Duration::try_from_secs_f64(seconds) {
+        Ok(duration) => duration,
+        Err(_) => Duration::MAX,
+    }
 }

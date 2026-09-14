@@ -5,6 +5,7 @@
 //! not intended to model a particular protocol or network; endpoints use a
 //! fixed service time and a configurable worker pool to expose saturation.
 
+use crate::gcra::saturating_add;
 use crate::{
     DispatchReservation, DispatchState, EndpointConfig, EndpointController, InFlightRequest,
     Outcome,
@@ -84,6 +85,12 @@ struct Completion {
 }
 
 /// Runs a fixed offered-rate workload through adaptive endpoints and P2C.
+///
+/// # Panics
+///
+/// Panics when the offered rate is not finite and positive, its arrival
+/// interval cannot be represented, no endpoints are configured, or an
+/// endpoint has no workers or a zero service time.
 pub fn simulate(config: SimulationConfig) -> SimulationReport {
     assert!(config.offered_rate.is_finite() && config.offered_rate > 0.0);
     assert!(
@@ -92,8 +99,10 @@ pub fn simulate(config: SimulationConfig) -> SimulationReport {
     );
 
     let start = Instant::now();
-    let end = start + config.duration;
-    let arrival_interval = Duration::from_secs_f64(1.0 / config.offered_rate);
+    let end = saturating_add(start, config.duration);
+    let Ok(arrival_interval) = Duration::try_from_secs_f64(1.0 / config.offered_rate) else {
+        panic!("offered rate is too low to represent an arrival interval");
+    };
     let mut next_arrival = start;
     let mut offered = 0;
     let mut accepted = 0;
@@ -144,28 +153,27 @@ pub fn simulate(config: SimulationConfig) -> SimulationReport {
             let choice = choose_p2c(&mut endpoints, &mut rng, now);
             if let Some(index) = choice {
                 let endpoint = &mut endpoints[index];
-                let reservation = endpoint
-                    .controller
-                    .reserve(now)
-                    .expect("P2C selected an endpoint that was not ready");
-                endpoint.pending.push_back(reservation);
-                accepted += 1;
+                if let Ok(reservation) = endpoint.controller.reserve(now) {
+                    endpoint.pending.push_back(reservation);
+                    accepted += 1;
+                } else {
+                    backpressured += 1;
+                }
             } else {
                 backpressured += 1;
             }
-            next_arrival = next_arrival
-                .checked_add(arrival_interval)
-                .expect("arrival schedule overflowed Instant");
+            let Some(next) = next_arrival.checked_add(arrival_interval) else {
+                break;
+            };
+            next_arrival = next;
         }
 
         drive_all(&mut endpoints, &mut completions, now);
-        max_queued = max_queued.max(
-            endpoints
-                .iter()
-                .map(|endpoint| endpoint.controller.queued())
-                .max()
-                .unwrap_or(0),
-        );
+        let queued = endpoints
+            .iter()
+            .map(|endpoint| endpoint.controller.queued())
+            .fold(0, usize::max);
+        max_queued = max_queued.max(queued);
     }
 
     let dispatched = endpoints.iter().map(|endpoint| endpoint.dispatched).sum();
@@ -233,22 +241,23 @@ fn drive_all(endpoints: &mut [EndpointRuntime], completions: &mut Vec<Completion
         while let Some(reservation) = endpoint.pending.front().copied() {
             match endpoint.controller.dispatch_state(reservation, now) {
                 DispatchState::Ready => {
-                    endpoint.pending.pop_front();
-                    let active = endpoint
-                        .controller
-                        .on_dispatched(reservation, now)
-                        .expect("dispatch state changed unexpectedly");
-                    let worker = endpoint
+                    let Some(worker) = endpoint
                         .available_at
                         .iter()
                         .enumerate()
                         .min_by_key(|(_, available_at)| **available_at)
-                        .expect("simulated endpoint must have a worker")
-                        .0;
-                    let completion_at = endpoint.available_at[worker]
-                        .max(now)
-                        .checked_add(endpoint.service_time)
-                        .expect("simulation completion schedule overflowed Instant");
+                        .map(|(worker, _)| worker)
+                    else {
+                        break;
+                    };
+                    let Some(active) = endpoint.controller.on_dispatched(reservation, now) else {
+                        break;
+                    };
+                    endpoint.pending.pop_front();
+                    let completion_at = saturating_add(
+                        endpoint.available_at[worker].max(now),
+                        endpoint.service_time,
+                    );
                     endpoint.available_at[worker] = completion_at;
                     endpoint.dispatched += 1;
                     completions.push(Completion {

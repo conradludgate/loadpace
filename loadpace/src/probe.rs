@@ -1,3 +1,4 @@
+use crate::gcra::saturating_add;
 use rand::{Rng, RngExt};
 use std::time::{Duration, Instant};
 
@@ -29,6 +30,11 @@ impl ProbeState {
         Self::default()
     }
 
+    /// Starts a temporary positive probe.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `delta` is not finite and strictly positive.
     pub fn start_positive(&mut self, delta: f64, until: Instant) {
         assert!(
             delta.is_finite() && delta > 0.0,
@@ -40,6 +46,11 @@ impl ProbeState {
         });
     }
 
+    /// Starts a temporary negative probe.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `factor` is not finite or is outside `(0, 1)`.
     pub fn start_negative(&mut self, factor: f64, until: Instant) {
         assert!(
             factor.is_finite() && (0.0..1.0).contains(&factor),
@@ -146,8 +157,8 @@ impl ProbeSchedule {
         now: Instant,
     ) -> Option<Probe> {
         self.validate();
-        if state.active(now).is_some() {
-            return state.current();
+        if let Some(active) = state.active(now) {
+            return Some(active);
         }
 
         let due_at = state.next_probe_at.get_or_insert(now);
@@ -156,22 +167,15 @@ impl ProbeSchedule {
         }
 
         let interval = self.random_interval(rng);
-        state.next_probe_at = Some(
-            now.checked_add(interval)
-                .expect("probe schedule overflowed Instant"),
-        );
+        state.next_probe_at = Some(saturating_add(now, interval));
 
         let draw = rng.random::<f64>();
         if draw < self.positive_probability {
-            let until = now
-                .checked_add(self.duration)
-                .expect("probe schedule overflowed Instant");
+            let until = saturating_add(now, self.duration);
             state.start_positive(self.positive_delta, until);
             state.current()
         } else if draw < self.positive_probability + self.negative_probability {
-            let until = now
-                .checked_add(self.duration)
-                .expect("probe schedule overflowed Instant");
+            let until = saturating_add(now, self.duration);
             state.start_negative(self.negative_factor, until);
             state.current()
         } else {
