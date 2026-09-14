@@ -11,7 +11,7 @@ keywords = ["load-balancing", "backpressure", "rama", "congestion-control"]
 categories = ["network-programming", "asynchronous"]
 
 [dependencies]
-loadpace = { version = "0.1.0-rc.3", path = "../loadpace" }
+loadpace = { version = "=0.1.0-rc.3", path = "../loadpace" }
 rama = { version = "0.4.0", default-features = false, features = ["std"] }
 rand = "0.10"
 tokio = { version = "1", features = ["sync", "time"] }
