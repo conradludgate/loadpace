@@ -399,10 +399,7 @@ where
             DispatchState::WaitUntil(deadline) => {
                 let wake_at = probe_until.map_or(deadline, |until| deadline.min(until));
                 let delay = wake_at.saturating_duration_since(now());
-                tokio::select! {
-                    _ = tokio::time::sleep(delay) => {},
-                    _ = notified => {},
-                }
+                let _ = tokio::time::timeout(delay, notified).await;
             }
             DispatchState::WaitForPrevious | DispatchState::InflightLimit => {
                 notified.await;
