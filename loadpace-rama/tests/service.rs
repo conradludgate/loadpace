@@ -2,13 +2,10 @@ use loadpace::{EndpointConfig, LatencyEstimatorConfig, ScheduleError};
 use loadpace_rama::{AdaptiveEndpoint, AdaptiveLayer, ServiceError};
 use rama::{Layer, Service};
 use std::future::Future;
-use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 use tokio::sync::Notify;
-
-type BoxResult<T> = Pin<Box<dyn Future<Output = Result<T, &'static str>> + Send>>;
 
 fn assert_send_sync<T: Send + Sync>() {}
 
@@ -117,7 +114,8 @@ async fn endpoint_rejects_beyond_its_scheduling_horizon() {
         Instant::now(),
     );
 
-    let first = tokio::spawn(endpoint.serve(1));
+    let first_endpoint = endpoint.clone();
+    let first = tokio::spawn(async move { first_endpoint.serve(1).await });
     started.notified().await;
 
     // The first request is in flight, while the second occupies the one-slot
@@ -154,9 +152,11 @@ async fn endpoint_paces_the_next_request() {
         Instant::now(),
     );
 
-    let first = tokio::spawn(endpoint.clone().serve(1));
+    let first_endpoint = endpoint.clone();
+    let first = tokio::spawn(async move { first_endpoint.serve(1).await });
     started.notified().await;
-    let second = tokio::spawn(endpoint.serve(2));
+    let second_endpoint = endpoint.clone();
+    let second = tokio::spawn(async move { second_endpoint.serve(2).await });
 
     tokio::time::advance(Duration::from_millis(999)).await;
     tokio::task::yield_now().await;
@@ -187,9 +187,11 @@ async fn endpoint_allows_concurrent_inner_services() {
         Instant::now(),
     );
 
-    let first = tokio::spawn(endpoint.clone().serve(1));
+    let first_endpoint = endpoint.clone();
+    let first = tokio::spawn(async move { first_endpoint.serve(1).await });
     started.notified().await;
-    let second = tokio::spawn(endpoint.serve(2));
+    let second_endpoint = endpoint.clone();
+    let second = tokio::spawn(async move { second_endpoint.serve(2).await });
     while starts.load(Ordering::Relaxed) < 2 {
         tokio::time::advance(Duration::from_micros(1)).await;
         tokio::task::yield_now().await;
@@ -231,7 +233,8 @@ async fn dropping_a_dispatched_request_records_a_failure() {
         Instant::now(),
     );
 
-    let request = tokio::spawn(endpoint.clone().serve(1));
+    let request_endpoint = endpoint.clone();
+    let request = tokio::spawn(async move { request_endpoint.serve(1).await });
     started.notified().await;
     request.abort();
     let _ = request.await;

@@ -203,7 +203,7 @@ where
     fn serve(
         &self,
         request: Request,
-    ) -> impl Future<Output = Result<Self::Output, Self::Error>> + Send + 'static {
+    ) -> impl Future<Output = Result<Self::Output, Self::Error>> + Send {
         let reservation = self
             .shared
             .controller
