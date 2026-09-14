@@ -16,11 +16,8 @@ impl Service<u64> for Echo {
     type Output = u64;
     type Error = &'static str;
 
-    fn serve(
-        &self,
-        request: u64,
-    ) -> impl Future<Output = Result<Self::Output, Self::Error>> + Send {
-        async move { Ok(request) }
+    async fn serve(&self, request: u64) -> Result<Self::Output, Self::Error> {
+        Ok(request)
     }
 }
 
@@ -30,11 +27,8 @@ impl Service<u64> for Failing {
     type Output = u64;
     type Error = &'static str;
 
-    fn serve(
-        &self,
-        _request: u64,
-    ) -> impl Future<Output = Result<Self::Output, Self::Error>> + Send {
-        async { Err("overloaded") }
+    async fn serve(&self, _request: u64) -> Result<Self::Output, Self::Error> {
+        Err("overloaded")
     }
 }
 
