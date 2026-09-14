@@ -282,6 +282,7 @@ async fn queued_demand_drives_automatic_probing() {
     started.notified().await;
     let second_endpoint = endpoint.clone();
     let second = tokio::spawn(async move { second_endpoint.serve(2).await });
+    tokio::time::advance(Duration::from_secs(1)).await;
     while endpoint.snapshot().active_probe.is_none() {
         tokio::task::yield_now().await;
     }
