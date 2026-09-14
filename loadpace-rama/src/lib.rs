@@ -109,14 +109,10 @@ fn now() -> Instant {
     tokio::time::Instant::now().into_std()
 }
 
-fn lock_unpoisoned<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    // Controller operations preserve their invariants without panicking. If a
-    // caller panics while holding an internal lock, keep the endpoint usable
-    // rather than turning that unrelated panic into permanent backpressure.
-    match mutex.lock() {
-        Ok(guard) => guard,
-        Err(poisoned) => poisoned.into_inner(),
-    }
+fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .expect("loadpace-rama internal mutex was poisoned")
 }
 
 /// A Rama service with per-endpoint adaptive pacing and bounded admission.
@@ -151,7 +147,7 @@ impl<S> AdaptiveEndpoint<S> {
 
     fn with_controller<T>(&self, operation: impl FnOnce(&mut EndpointController) -> T) -> T {
         let (result, changed) = {
-            let mut controller = lock_unpoisoned(&self.shared.controller);
+            let mut controller = lock(&self.shared.controller);
             let before = controller.probe().current();
             let result = operation(&mut controller);
             (result, before != controller.probe().current())
@@ -225,7 +221,7 @@ where
         &self,
         request: Request,
     ) -> impl Future<Output = Result<Self::Output, Self::Error>> + Send {
-        let reservation = lock_unpoisoned(&self.shared.controller).reserve(now());
+        let reservation = lock(&self.shared.controller).reserve(now());
 
         match reservation {
             Ok(reservation) => {
@@ -303,10 +299,10 @@ impl<S> RequestGuard<S> {
         match std::mem::replace(&mut self.state, RequestState::Finished) {
             RequestState::Dispatched(active) => {
                 let latency = now.saturating_duration_since(active.dispatched_at());
-                lock_unpoisoned(&self.shared.controller).on_complete(active, outcome, latency, now);
+                lock(&self.shared.controller).on_complete(active, outcome, latency, now);
             }
             RequestState::Reserved(reservation) => {
-                lock_unpoisoned(&self.shared.controller).cancel(reservation, now);
+                lock(&self.shared.controller).cancel(reservation, now);
             }
             RequestState::Finished => return,
         }
@@ -340,14 +336,14 @@ where
         // lost, leaving this request asleep indefinitely.
         notified.as_mut().enable();
         let (decision, probe_until, next_probe_at, probe_changed) = {
-            let mut controller = lock_unpoisoned(&shared.controller);
+            let mut controller = lock(&shared.controller);
             let current = now();
             let before = controller.probe().current();
             controller.refresh(current);
             let needs_probe = controller.inflight() > 0 && controller.queued() > 0;
             if needs_probe {
                 let schedule = controller.config().probe_schedule.clone();
-                let mut rng = lock_unpoisoned(&shared.probe_rng);
+                let mut rng = lock(&shared.probe_rng);
                 controller.maybe_start_probe(&schedule, &mut *rng, current);
             }
             let active_probe = controller.probe().current();
@@ -386,8 +382,7 @@ where
     }
 
     let current = now();
-    let Some(active) = lock_unpoisoned(&shared.controller).on_dispatched(reservation, current)
-    else {
+    let Some(active) = lock(&shared.controller).on_dispatched(reservation, current) else {
         unreachable!("a ready dispatch reservation must be dispatchable");
     };
     guard.mark_dispatched(active);

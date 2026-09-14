@@ -45,6 +45,11 @@ type ReadinessFuture = Pin<
     >,
 >;
 
+enum ReadinessState {
+    Idle,
+    Waiting(ReadinessFuture),
+}
+
 // Core deliberately uses `std::time::Instant`; Tower waits use Tokio's
 // runtime clock. Converting here keeps controller deadlines and Tokio timers
 // in the same clock domain, including when Tokio time is paused in tests.
@@ -52,14 +57,10 @@ fn now() -> Instant {
     tokio::time::Instant::now().into_std()
 }
 
-fn lock_unpoisoned<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    // Controller operations preserve their invariants without panicking. If a
-    // caller panics while holding an internal lock, keep the endpoint usable
-    // rather than turning that unrelated panic into permanent backpressure.
-    match mutex.lock() {
-        Ok(guard) => guard,
-        Err(poisoned) => poisoned.into_inner(),
-    }
+fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .expect("loadpace-tower internal mutex was poisoned")
 }
 
 /// A Tower service with per-endpoint adaptive pacing and bounded admission.
@@ -72,7 +73,7 @@ fn lock_unpoisoned<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 pub struct AdaptiveEndpoint<S> {
     shared: Arc<Shared<S>>,
     readiness_permit: Option<tokio::sync::OwnedSemaphorePermit>,
-    readiness: Mutex<Option<ReadinessFuture>>,
+    readiness: Mutex<ReadinessState>,
 }
 
 impl<S> AdaptiveEndpoint<S> {
@@ -91,13 +92,13 @@ impl<S> AdaptiveEndpoint<S> {
                 probe_rng: Mutex::new(rand::make_rng()),
             }),
             readiness_permit: None,
-            readiness: Mutex::new(None),
+            readiness: Mutex::new(ReadinessState::Idle),
         }
     }
 
     fn with_controller<T>(&self, operation: impl FnOnce(&mut EndpointController) -> T) -> T {
         let (result, changed) = {
-            let mut controller = lock_unpoisoned(&self.shared.controller);
+            let mut controller = lock(&self.shared.controller);
             let before = controller.probe().current();
             let result = operation(&mut controller);
             (result, before != controller.probe().current())
@@ -206,7 +207,7 @@ impl<S> Clone for AdaptiveEndpoint<S> {
         Self {
             shared: Arc::clone(&self.shared),
             readiness_permit: None,
-            readiness: Mutex::new(None),
+            readiness: Mutex::new(ReadinessState::Idle),
         }
     }
 }
@@ -236,33 +237,46 @@ where
             return Poll::Ready(Ok(()));
         }
 
-        let mut readiness = lock_unpoisoned(&self.readiness);
-        if readiness.is_none() {
-            match Arc::clone(&self.shared.ready).try_acquire_owned() {
+        let mut readiness = lock(&self.readiness);
+        let poll = match std::mem::replace(&mut *readiness, ReadinessState::Idle) {
+            ReadinessState::Idle => match Arc::clone(&self.shared.ready).try_acquire_owned() {
                 Ok(permit) => {
                     self.readiness_permit = Some(permit);
                     return Poll::Ready(Ok(()));
                 }
                 Err(tokio::sync::TryAcquireError::NoPermits) => {
-                    *readiness = Some(Box::pin(Arc::clone(&self.shared.ready).acquire_owned()));
+                    let mut future = Box::pin(Arc::clone(&self.shared.ready).acquire_owned());
+                    let poll = future.as_mut().poll(cx);
+                    if poll.is_pending() {
+                        *readiness = ReadinessState::Waiting(future);
+                    }
+                    poll
                 }
                 Err(tokio::sync::TryAcquireError::Closed) => {
-                    unreachable!("the endpoint owns the readiness semaphore")
+                    // `ready` is private to `Shared` and is never closed by this
+                    // adapter. There is no meaningful S::Error to return for
+                    // this internal-only failure.
+                    unreachable!("the endpoint readiness semaphore cannot be closed")
                 }
+            },
+            ReadinessState::Waiting(mut future) => {
+                let poll = future.as_mut().poll(cx);
+                if poll.is_pending() {
+                    *readiness = ReadinessState::Waiting(future);
+                }
+                poll
             }
-        }
-
-        let Some(future) = readiness.as_mut() else {
-            unreachable!("a readiness future exists after acquiring no permits");
         };
-        match future.as_mut().poll(cx) {
+
+        match poll {
             Poll::Ready(Ok(permit)) => {
-                *readiness = None;
                 self.readiness_permit = Some(permit);
                 Poll::Ready(Ok(()))
             }
             Poll::Ready(Err(_)) => {
-                unreachable!("the endpoint owns the readiness semaphore")
+                // The future is created from the same private semaphore as
+                // above, which this adapter never closes.
+                unreachable!("the endpoint readiness semaphore cannot be closed")
             }
             Poll::Pending => Poll::Pending,
         }
@@ -275,7 +289,7 @@ where
             // caller violating that contract.
             panic!("AdaptiveEndpoint::call invoked without available readiness");
         };
-        let reservation = lock_unpoisoned(&self.shared.controller).reserve(now());
+        let reservation = lock(&self.shared.controller).reserve(now());
         let Ok(reservation) = reservation else {
             // The semaphore permit and controller queue are acquired as one
             // logical reservation. Failure here indicates an internal state
@@ -340,10 +354,10 @@ impl<S> RequestGuard<S> {
         match std::mem::replace(&mut self.state, RequestState::Finished) {
             RequestState::Dispatched(active) => {
                 let latency = now.saturating_duration_since(active.dispatched_at());
-                lock_unpoisoned(&self.shared.controller).on_complete(active, outcome, latency, now);
+                lock(&self.shared.controller).on_complete(active, outcome, latency, now);
             }
             RequestState::Reserved(reservation) => {
-                lock_unpoisoned(&self.shared.controller).cancel(reservation, now);
+                lock(&self.shared.controller).cancel(reservation, now);
             }
             RequestState::Finished => return,
         }
@@ -381,14 +395,14 @@ where
         // lost, leaving this request asleep indefinitely.
         notified.as_mut().enable();
         let (decision, probe_until, next_probe_at, probe_changed) = {
-            let mut controller = lock_unpoisoned(&shared.controller);
+            let mut controller = lock(&shared.controller);
             let current = now();
             let before = controller.probe().current();
             controller.refresh(current);
             let needs_probe = controller.inflight() > 0 && controller.queued() > 0;
             if needs_probe {
                 let schedule = controller.config().probe_schedule.clone();
-                let mut rng = lock_unpoisoned(&shared.probe_rng);
+                let mut rng = lock(&shared.probe_rng);
                 controller.maybe_start_probe(&schedule, &mut *rng, current);
             }
             let active_probe = controller.probe().current();
@@ -433,9 +447,7 @@ where
         match std::future::poll_fn(|cx| inner.poll_ready(cx)).await {
             Ok(()) => {
                 let now = now();
-                let Some(active) =
-                    lock_unpoisoned(&shared.controller).on_dispatched(reservation, now)
-                else {
+                let Some(active) = lock(&shared.controller).on_dispatched(reservation, now) else {
                     unreachable!("a ready dispatch reservation must be dispatchable");
                 };
                 guard.mark_dispatched(active);
@@ -444,7 +456,7 @@ where
                 future.await
             }
             Err(error) => {
-                lock_unpoisoned(&shared.controller).on_admission_failure(now());
+                lock(&shared.controller).on_admission_failure(now());
                 Err(error)
             }
         }
