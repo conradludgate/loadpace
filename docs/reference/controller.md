@@ -40,7 +40,10 @@ reservations.
 The endpoint controller uses the latency estimator's minimum observed RTT as
 the Gradient2 reference. This keeps shared queueing visible to incumbents and
 newly joined clients alike; the long RTT EWMA remains available in snapshots
-and for direct `Gradient2` callers.
+and for direct `Gradient2` callers. Before the first successful sample, the
+configured initial RTT is used as the temporary baseline; the first sample
+then establishes the observed minimum even when it is slower than that initial
+estimate.
 
 ## `DispatchState`
 

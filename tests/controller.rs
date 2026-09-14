@@ -75,6 +75,7 @@ fn latency_estimator_learns_a_first_sample_above_the_initial_estimate() {
         min_rtt: Duration::from_millis(1),
     });
 
+    assert_eq!(estimator.baseline(), Duration::from_millis(50));
     estimator.observe(Duration::from_millis(100));
 
     assert_eq!(estimator.baseline(), Duration::from_millis(100));
