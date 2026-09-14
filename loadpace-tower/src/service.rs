@@ -4,8 +4,6 @@ use loadpace::{
     Outcome,
 };
 use pin_project_lite::pin_project;
-use rand::Rng;
-use rand::rngs::StdRng;
 use std::future::Future;
 use std::marker::PhantomData;
 use std::pin::Pin;
@@ -34,7 +32,6 @@ struct Shared<S> {
     inner: tokio::sync::Mutex<S>,
     controller: Mutex<EndpointController>,
     dispatch: tokio::sync::Notify,
-    probe_rng: Mutex<StdRng>,
 }
 
 // Core deliberately uses `std::time::Instant`; Tower waits use Tokio's
@@ -76,7 +73,6 @@ impl<S> AdaptiveEndpoint<S> {
                 inner: tokio::sync::Mutex::new(inner),
                 controller: Mutex::new(EndpointController::new(config, now)),
                 dispatch: tokio::sync::Notify::new(),
-                probe_rng: Mutex::new(rand::make_rng()),
             }),
             readiness_permit: None,
             readiness,
@@ -86,9 +82,9 @@ impl<S> AdaptiveEndpoint<S> {
     fn with_controller<T>(&self, operation: impl FnOnce(&mut EndpointController) -> T) -> T {
         let (result, changed) = {
             let mut controller = lock(&self.shared.controller);
-            let before = controller.probe().current();
+            let before = controller.active_probe();
             let result = operation(&mut controller);
-            (result, before != controller.probe().current())
+            (result, before != controller.active_probe())
         };
         if changed {
             self.shared.dispatch.notify_waiters();
@@ -98,30 +94,6 @@ impl<S> AdaptiveEndpoint<S> {
 
     pub fn snapshot(&self) -> loadpace::ControllerSnapshot {
         self.with_controller(|controller| controller.snapshot(now()))
-    }
-
-    pub fn start_positive_probe(&self, delta: f64, until: Instant) {
-        self.with_controller(|controller| {
-            controller.start_positive_probe(delta, until, now());
-        });
-    }
-
-    pub fn start_negative_probe(&self, factor: f64, until: Instant) {
-        self.with_controller(|controller| {
-            controller.start_negative_probe(factor, until, now());
-        });
-    }
-
-    /// Gives a caller-provided RNG a time-gated chance to start a probe.
-    ///
-    /// The method is intentionally caller-driven: applications can choose
-    /// where to run the check and simulations can provide deterministic RNGs.
-    pub fn maybe_start_probe<R: Rng + ?Sized>(
-        &self,
-        schedule: &loadpace::ProbeSchedule,
-        rng: &mut R,
-    ) -> Option<loadpace::Probe> {
-        self.with_controller(|controller| controller.maybe_start_probe(schedule, rng, now()))
     }
 
     pub fn load_metric(&self) -> LoadMetric {
@@ -350,20 +322,15 @@ fn dispatch_plan<S>(
 ) -> DispatchPlan {
     let (plan, probe_changed) = {
         let mut controller = lock(&shared.controller);
-        let previous_probe = controller.probe().current();
+        let previous_probe = controller.active_probe();
         controller.refresh(current);
 
         let demand_requires_probing = controller.inflight() > 0 && controller.queued() > 0;
-        if demand_requires_probing {
-            let schedule = controller.config().probe_schedule.clone();
-            let mut rng = lock(&shared.probe_rng);
-            controller.maybe_start_probe(&schedule, &mut *rng, current);
-        }
 
-        let active_probe = controller.probe().current();
+        let active_probe = controller.active_probe();
         let next_wakeup = match active_probe {
             Some(probe) => Some(probe.until),
-            None if demand_requires_probing => controller.probe().next_probe_at(),
+            None if demand_requires_probing => controller.next_probe_at(),
             None => None,
         };
         let plan = DispatchPlan {

@@ -120,14 +120,15 @@ The asymmetry gives a small client a meaningful opportunity to grow while
 causing a dominant client to yield more absolute capacity. A probe does not
 permanently assign ownership; normal feedback decides what remains sustainable.
 
-`ProbeSchedule` accepts a caller-provided RNG and schedules the next decision
-from a randomized time interval rather than from a probability per request.
-This keeps probe opportunities independent of request rate, while still
-making production entropy and deterministic simulation equally possible. The
-framework adapters drive the configured schedule when queued demand is
-present, waking dispatches at the next probe transition without requiring a
-hidden background task. The explicit caller-driven probe check remains
-available for simulations and custom policies.
+`ProbeSchedule` schedules the next decision from a randomized time interval
+rather than from a probability per request. The controller owns the random
+source and consults the schedule when normal dispatch or load-selection
+operations refresh endpoint state. This keeps probe opportunities independent
+of request rate while allowing an endpoint that has become less attractive to
+recover. Framework adapters advance the controller through normal operations,
+waking dispatches at the next probe transition without requiring application
+timers or a hidden background task. `EndpointController::new_with_seed` keeps
+simulations and tests reproducible without exposing probe control to callers.
 
 ## Discovery lifecycle
 

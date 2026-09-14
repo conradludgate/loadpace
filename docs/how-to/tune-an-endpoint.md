@@ -64,24 +64,33 @@ to one per `update_interval`, so the controller does not learn faster merely
 because responses arrive faster. The controller deliberately does not increase
 from application-limited samples.
 
-## Use probes carefully
+## Tune probes only when needed
 
-Positive probes add a fixed amount to the base operating point. Negative
-probes multiply it by a factor below one. A caller supplies the RNG so tests
-can use a deterministic seed:
+Probes are temporary controller-owned perturbations: positive probes add a
+fixed amount to the base operating point, while negative probes multiply it by
+a factor below one. They help independent clients escape an unfair equilibrium
+without permanently assigning capacity.
+
+The controller automatically considers the configured schedule as normal
+dispatch and load-selection operations refresh endpoint state. The adapters
+trigger this through ordinary operations, so application code does not need to
+start probes, supply randomness, or run a timer. Start with the default
+schedule. If membership churn requires a slower or faster fairness response,
+tune it as part of the endpoint configuration:
 
 ```rust
-let mut rng = rand::rngs::StdRng::seed_from_u64(7);
-controller.maybe_start_probe(&ProbeSchedule::default(), &mut rng, now);
+let config = EndpointConfig {
+    probe_schedule: ProbeSchedule {
+        min_interval: Duration::from_secs(1),
+        max_interval: Duration::from_secs(5),
+        ..ProbeSchedule::default()
+    },
+    ..EndpointConfig::default()
+};
 ```
 
-Treat probing as a temporary perturbation. It is useful for escaping unfair
-multi-client equilibria, but it should not be used as a permanent capacity
-assignment mechanism. Probe decisions are time-gated between the configured
-interval bounds, so calling the check more often does not increase the probe
-rate. The default schedule attempts a positive or negative probe about every
-twenty seconds on average; use a custom schedule when a slower or faster
-fairness response is appropriate for the membership churn of your service.
+Use `EndpointController::new_with_seed` for reproducible simulations and
+tests. Production controllers use their own entropy source.
 
 ## Watch these metrics
 

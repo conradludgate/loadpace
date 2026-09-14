@@ -29,14 +29,12 @@ starts immediately before `S::call`, so local queue and readiness delay do not
 enter the RTT sample. Dropping the future cancels a queued reservation or
 records a dispatched request as failed.
 
-`snapshot` returns controller metrics. `start_positive_probe` and
-`start_negative_probe` expose explicit probe control without exposing the
-adapter's internal mutable controller state. `maybe_start_probe` provides a
-time-gated, caller-driven randomized probe check using an RNG supplied by the
-application. The adapter also automatically drives the configured schedule when
-queued demand waits behind in-flight work. Probe changes wake queued dispatches
-immediately; dispatch waits also wake at the next scheduled decision and when
-an active probe expires so the base pacing rate is recomputed.
+`snapshot` returns controller metrics. Probes are controller-owned and are
+automatically considered as the adapter refreshes endpoint state during normal
+dispatch and load selection. Application code does not need a timer or a probe
+task. Probe changes wake queued dispatches immediately; dispatch waits also wake
+at the next scheduled decision and when an active probe expires so the base
+pacing rate is recomputed.
 
 ## `LoadMetric`
 

@@ -177,7 +177,7 @@ It combines:
 - a fractional Gradient2 operating point;
 - Little's Law to derive a request rate;
 - GCRA pacing and virtual queue prediction;
-- temporary additive positive and multiplicative negative probes;
+- controller-driven temporary additive and multiplicative probes;
 - explicit failure and cancellation handling;
 - a bounded scheduling queue and emergency inflight cap.
 

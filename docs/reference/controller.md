@@ -25,6 +25,7 @@ The builder-style methods `.queue_capacity(value)` and
 | Method | Effect |
 | --- | --- |
 | `new(config, now)` | Creates fresh endpoint state and an immediately available first pacing slot |
+| `new_with_seed(config, now, seed)` | Creates fresh state with deterministic probe entropy for simulations and tests |
 | `reserve(now)` | Appends a bounded virtual queue reservation |
 | `dispatch_state(reservation, now)` | Reports `Ready`, a pacing deadline, FIFO wait, inflight limit, or cancellation |
 | `on_dispatched(reservation, now)` | Commits a reservation after the transport is ready |
@@ -79,12 +80,14 @@ counters, sample count, and active probe state.
 `ProbeSchedule` describes randomized probes. The positive and negative
 probabilities choose the probe kind at each scheduled decision; the remaining
 probability performs no probe. `min_interval` and `max_interval` bound the time
-until the next decision, so checking the schedule more often does not increase
-probe frequency. The default intervals are one to five seconds, and the
-default duration is one second. With the default 10% positive and 5% negative
-probabilities, a probe opportunity occurs every twenty seconds on average.
+until the next decision, so request rate does not affect probe frequency. The
+default intervals are one to five seconds, and the default duration is one
+second. With the default 10% positive and 5% negative probabilities, a probe
+opportunity occurs every twenty seconds on average.
 
-Framework adapters drive the configured schedule when an endpoint has queued
-demand behind in-flight work. The core controller and adapter methods also
-accept caller-driven probe checks for deterministic simulations or custom
-policies.
+The controller owns the random source and consults the schedule as normal
+dispatch and load-selection operations refresh endpoint state. This lets an
+endpoint that has become less attractive still receive an opportunity to
+recover; applications do not need a timer, background task, or probe callback.
+Use `new_with_seed` when a deterministic simulation or test needs reproducible
+probe decisions.

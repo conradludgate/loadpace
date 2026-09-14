@@ -18,11 +18,9 @@
 
 use loadpace::{
     ControllerSnapshot, DispatchReservation, DispatchState, EndpointConfig, EndpointController,
-    InFlightRequest, Outcome, Probe, ProbeSchedule, ScheduleError,
+    InFlightRequest, Outcome, ScheduleError,
 };
 use rama::{Layer, Service};
-use rand::Rng;
-use rand::rngs::StdRng;
 use std::error::Error;
 use std::fmt;
 use std::future::Future;
@@ -99,7 +97,6 @@ struct Shared<S> {
     inner: Arc<S>,
     controller: Mutex<EndpointController>,
     dispatch: Notify,
-    probe_rng: Mutex<StdRng>,
 }
 
 // Core deliberately uses `std::time::Instant`; Rama waits use Tokio's
@@ -140,7 +137,6 @@ impl<S> AdaptiveEndpoint<S> {
                 inner: Arc::new(inner),
                 controller: Mutex::new(EndpointController::new(config, now)),
                 dispatch: Notify::new(),
-                probe_rng: Mutex::new(rand::make_rng()),
             }),
         }
     }
@@ -148,9 +144,9 @@ impl<S> AdaptiveEndpoint<S> {
     fn with_controller<T>(&self, operation: impl FnOnce(&mut EndpointController) -> T) -> T {
         let (result, changed) = {
             let mut controller = lock(&self.shared.controller);
-            let before = controller.probe().current();
+            let before = controller.active_probe();
             let result = operation(&mut controller);
-            (result, before != controller.probe().current())
+            (result, before != controller.active_probe())
         };
         if changed {
             self.shared.dispatch.notify_waiters();
@@ -161,32 +157,6 @@ impl<S> AdaptiveEndpoint<S> {
     /// Returns a current snapshot of this endpoint's controller.
     pub fn snapshot(&self) -> ControllerSnapshot {
         self.with_controller(|controller| controller.snapshot(now()))
-    }
-
-    /// Starts a temporary positive concurrency probe.
-    pub fn start_positive_probe(&self, delta: f64, until: Instant) {
-        self.with_controller(|controller| {
-            controller.start_positive_probe(delta, until, now());
-        });
-    }
-
-    /// Starts a temporary negative concurrency probe.
-    pub fn start_negative_probe(&self, factor: f64, until: Instant) {
-        self.with_controller(|controller| {
-            controller.start_negative_probe(factor, until, now());
-        });
-    }
-
-    /// Gives a caller-provided RNG a time-gated chance to start a probe.
-    ///
-    /// The method is intentionally caller-driven: applications can choose
-    /// where to run the check and simulations can provide deterministic RNGs.
-    pub fn maybe_start_probe<R: Rng + ?Sized>(
-        &self,
-        schedule: &ProbeSchedule,
-        rng: &mut R,
-    ) -> Option<Probe> {
-        self.with_controller(|controller| controller.maybe_start_probe(schedule, rng, now()))
     }
 
     /// Returns the endpoint's predicted completion cost for load balancing.
@@ -335,20 +305,15 @@ fn dispatch_plan<S>(
 ) -> DispatchPlan {
     let (plan, probe_changed) = {
         let mut controller = lock(&shared.controller);
-        let previous_probe = controller.probe().current();
+        let previous_probe = controller.active_probe();
         controller.refresh(current);
 
         let demand_requires_probing = controller.inflight() > 0 && controller.queued() > 0;
-        if demand_requires_probing {
-            let schedule = controller.config().probe_schedule.clone();
-            let mut rng = lock(&shared.probe_rng);
-            controller.maybe_start_probe(&schedule, &mut *rng, current);
-        }
 
-        let active_probe = controller.probe().current();
+        let active_probe = controller.active_probe();
         let next_wakeup = match active_probe {
             Some(probe) => Some(probe.until),
-            None if demand_requires_probing => controller.probe().next_probe_at(),
+            None if demand_requires_probing => controller.next_probe_at(),
             None => None,
         };
         let plan = DispatchPlan {

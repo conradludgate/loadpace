@@ -1,6 +1,5 @@
 use loadpace::{EndpointConfig, LatencyEstimatorConfig, ProbeSchedule};
 use loadpace_tower::AdaptiveEndpoint;
-use rand::SeedableRng;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -210,55 +209,27 @@ async fn endpoint_failures_are_not_treated_as_fast_healthy_work() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn endpoint_exposes_explicit_probe_controls() {
-    let now = Instant::now();
-    let endpoint = AdaptiveEndpoint::new_at(Echo, config(1, Duration::from_millis(10)), now);
-
-    endpoint.start_positive_probe(1.0, now + Duration::from_secs(1));
-
-    let snapshot = endpoint.snapshot();
-    assert_eq!(
-        snapshot.effective_concurrency,
-        snapshot.target_concurrency + 1.0
-    );
-}
-
-#[tokio::test(start_paused = true)]
-async fn endpoint_probe_checks_are_time_gated() {
-    let endpoint =
-        AdaptiveEndpoint::new_at(Echo, config(1, Duration::from_millis(10)), Instant::now());
-    let schedule = ProbeSchedule {
-        positive_probability: 1.0,
-        negative_probability: 0.0,
-        min_interval: Duration::from_secs(1),
-        max_interval: Duration::from_secs(1),
-        duration: Duration::from_millis(100),
-        ..ProbeSchedule::default()
-    };
-    let mut rng = rand::rngs::StdRng::seed_from_u64(7);
-
-    let first = endpoint
-        .maybe_start_probe(&schedule, &mut rng)
-        .expect("the first probe should start immediately");
-    assert_eq!(endpoint.maybe_start_probe(&schedule, &mut rng), Some(first));
-
-    tokio::time::advance(Duration::from_secs(1)).await;
-    assert!(endpoint.maybe_start_probe(&schedule, &mut rng).is_some());
-}
-
-#[tokio::test(start_paused = true)]
-async fn positive_probe_wakes_a_queued_dispatch() {
+async fn automatic_positive_probe_wakes_a_queued_dispatch() {
     let started = Arc::new(Notify::new());
     let release = Arc::new(Notify::new());
     let starts = Arc::new(AtomicUsize::new(0));
     let now = tokio::time::Instant::now().into_std();
+    let mut endpoint_config = config(2, Duration::from_secs(1));
+    endpoint_config.probe_schedule = ProbeSchedule {
+        positive_probability: 1.0,
+        negative_probability: 0.0,
+        min_interval: Duration::from_secs(1),
+        max_interval: Duration::from_secs(1),
+        duration: Duration::from_secs(1),
+        ..ProbeSchedule::default()
+    };
     let endpoint = AdaptiveEndpoint::new_at(
         Held {
             started: Arc::clone(&started),
             release: Arc::clone(&release),
             starts: Arc::clone(&starts),
         },
-        config(2, Duration::from_secs(1)),
+        endpoint_config,
         now,
     );
 
@@ -270,10 +241,6 @@ async fn positive_probe_wakes_a_queued_dispatch() {
     while endpoint.snapshot().queued != 1 {
         tokio::task::yield_now().await;
     }
-    endpoint.start_positive_probe(
-        1.0,
-        tokio::time::Instant::now().into_std() + Duration::from_secs(1),
-    );
     tokio::task::yield_now().await;
 
     tokio::time::advance(Duration::from_millis(400)).await;
@@ -291,18 +258,28 @@ async fn positive_probe_wakes_a_queued_dispatch() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn probe_expiry_wakes_a_dispatch_to_recompute_the_slower_rate() {
+async fn automatic_negative_probe_expiry_wakes_a_dispatch_to_recompute_the_slower_rate() {
     let started = Arc::new(Notify::new());
     let release = Arc::new(Notify::new());
     let starts = Arc::new(AtomicUsize::new(0));
     let now = tokio::time::Instant::now().into_std();
+    let mut endpoint_config = config(2, Duration::from_secs(1));
+    endpoint_config.probe_schedule = ProbeSchedule {
+        positive_probability: 0.0,
+        negative_probability: 1.0,
+        negative_factor: 0.5,
+        min_interval: Duration::from_secs(1),
+        max_interval: Duration::from_secs(1),
+        duration: Duration::from_millis(200),
+        ..ProbeSchedule::default()
+    };
     let endpoint = AdaptiveEndpoint::new_at(
         Held {
             started: Arc::clone(&started),
             release: Arc::clone(&release),
             starts: Arc::clone(&starts),
         },
-        config(2, Duration::from_secs(1)),
+        endpoint_config,
         now,
     );
 
@@ -314,10 +291,6 @@ async fn probe_expiry_wakes_a_dispatch_to_recompute_the_slower_rate() {
     while endpoint.snapshot().queued != 1 {
         tokio::task::yield_now().await;
     }
-    endpoint.start_negative_probe(
-        0.5,
-        tokio::time::Instant::now().into_std() + Duration::from_millis(200),
-    );
     tokio::task::yield_now().await;
 
     tokio::time::advance(Duration::from_millis(200)).await;

@@ -36,11 +36,11 @@ when the endpoint boundary is known at composition time.
 ## Metrics and probes
 
 `load_metric` returns the controller's predicted completion cost in seconds.
-`snapshot` returns the current controller state. `start_positive_probe`,
-`start_negative_probe`, and `maybe_start_probe` mirror the core probe controls;
-the adapter also automatically drives the configured schedule when queued
-demand waits behind in-flight work. It wakes waiting dispatches when an active
-probe changes, expires, or causes a rate transition.
+`snapshot` returns the current controller state. Probes are controller-owned
+and the adapter automatically advances the configured schedule during normal
+dispatch and load-selection operations. Application code does not need a timer
+or a probe task; the adapter wakes waiting dispatches when an active probe
+changes, expires, or causes a rate transition.
 
 `ServiceError::Rejected` represents transient endpoint backpressure from the
 bounded scheduling horizon. A higher-level balancer should try another
