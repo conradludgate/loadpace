@@ -115,8 +115,10 @@ permanently assign ownership; normal feedback decides what remains sustainable.
 from a randomized time interval rather than from a probability per request.
 This keeps probe opportunities independent of request rate, while still
 making production entropy and deterministic simulation equally possible. The
-framework adapter exposes a caller-driven probe check but does not run a
-hidden background probe task.
+framework adapters drive the configured schedule when queued demand is
+present, waking dispatches at the next probe transition without requiring a
+hidden background task. The explicit caller-driven probe check remains
+available for simulations and custom policies.
 
 ## Discovery lifecycle
 

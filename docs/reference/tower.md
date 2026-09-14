@@ -33,8 +33,10 @@ records a dispatched request as failed.
 `start_negative_probe` expose explicit probe control without exposing the
 adapter's internal mutable controller state. `maybe_start_probe` provides a
 time-gated, caller-driven randomized probe check using an RNG supplied by the
-application. Probe changes wake queued dispatches immediately; dispatch waits
-also wake when an active probe expires so the base pacing rate is recomputed.
+application. The adapter also automatically drives the configured schedule when
+queued demand waits behind in-flight work. Probe changes wake queued dispatches
+immediately; dispatch waits also wake at the next scheduled decision and when
+an active probe expires so the base pacing rate is recomputed.
 
 ## `LoadMetric`
 

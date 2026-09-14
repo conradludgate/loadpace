@@ -85,6 +85,11 @@ fn config(queue_capacity: usize, initial_rtt: Duration) -> EndpointConfig {
             long_alpha: 1.0,
             min_rtt: initial_rtt,
         },
+        probe_schedule: ProbeSchedule {
+            positive_probability: 0.0,
+            negative_probability: 0.0,
+            ..ProbeSchedule::default()
+        },
         ..EndpointConfig::default()
     }
 }
@@ -331,6 +336,48 @@ async fn probe_expiry_wakes_a_dispatch_to_recompute_the_slower_rate() {
     tokio::task::yield_now().await;
     tokio::task::yield_now().await;
     assert_eq!(starts.load(Ordering::Relaxed), 2);
+
+    release.notify_waiters();
+    assert_eq!(first.await.unwrap().unwrap(), 1);
+    assert_eq!(second.await.unwrap().unwrap(), 2);
+}
+
+#[tokio::test(start_paused = true)]
+async fn queued_demand_drives_automatic_probing() {
+    let started = Arc::new(Notify::new());
+    let release = Arc::new(Notify::new());
+    let starts = Arc::new(AtomicUsize::new(0));
+    let mut endpoint_config = config(2, Duration::from_secs(1));
+    endpoint_config.probe_schedule = ProbeSchedule {
+        positive_probability: 1.0,
+        negative_probability: 0.0,
+        min_interval: Duration::from_secs(1),
+        max_interval: Duration::from_secs(1),
+        duration: Duration::from_millis(100),
+        ..ProbeSchedule::default()
+    };
+    let endpoint = AdaptiveEndpoint::new_at(
+        Held {
+            started: Arc::clone(&started),
+            release: Arc::clone(&release),
+            starts: Arc::clone(&starts),
+        },
+        endpoint_config,
+        Instant::now(),
+    );
+
+    let first = tokio::spawn(endpoint.clone().oneshot(1));
+    started.notified().await;
+    let second = tokio::spawn(endpoint.clone().oneshot(2));
+    while endpoint.snapshot().active_probe.is_none() {
+        tokio::task::yield_now().await;
+    }
+
+    assert_eq!(starts.load(Ordering::Relaxed), 1);
+    assert!(matches!(
+        endpoint.snapshot().active_probe.unwrap().kind,
+        loadpace::ProbeKind::Positive { .. }
+    ));
 
     release.notify_waiters();
     assert_eq!(first.await.unwrap().unwrap(), 1);

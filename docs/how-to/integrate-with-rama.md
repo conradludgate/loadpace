@@ -79,7 +79,9 @@ virtual queue across callers.
 `AdaptiveEndpoint::load_metric` returns the predicted completion cost in
 seconds, which can be used by a higher-level Rama balancer. `snapshot` exposes
 the RTT, concurrency, queue, inflight, completion, and probe state for
-metrics. Probe controls are intentionally caller-driven:
+metrics. With the default `EndpointConfig`, the adapter automatically advances
+the probe schedule when queued work waits behind in-flight work. Explicit probe
+controls remain available for custom policies:
 
 ```rust
 use std::time::{Duration, Instant};

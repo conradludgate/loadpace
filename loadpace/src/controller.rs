@@ -17,8 +17,12 @@ pub struct EndpointConfig {
     pub queue_capacity: usize,
     /// Emergency-only cap for requests that have actually dispatched.
     pub max_inflight: usize,
+    /// RTT estimator configuration.
     pub latency: LatencyEstimatorConfig,
+    /// Fractional operating-point configuration.
     pub gradient: Gradient2Config,
+    /// Randomized probe policy used by framework adapters.
+    pub probe_schedule: ProbeSchedule,
 }
 
 impl Default for EndpointConfig {
@@ -28,6 +32,7 @@ impl Default for EndpointConfig {
             max_inflight: 1024,
             latency: LatencyEstimatorConfig::default(),
             gradient: Gradient2Config::default(),
+            probe_schedule: ProbeSchedule::default(),
         }
     }
 }

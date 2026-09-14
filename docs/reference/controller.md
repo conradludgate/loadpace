@@ -15,6 +15,7 @@ separately; see the [Tower adapter reference](tower.md).
 | `max_inflight` | `1024` | Emergency cap on actually dispatched requests |
 | `latency` | `LatencyEstimatorConfig::default()` | RTT estimator parameters |
 | `gradient` | `Gradient2Config::default()` | Fractional Gradient2 operating-point parameters |
+| `probe_schedule` | `ProbeSchedule::default()` | Randomized probe timing and perturbation parameters |
 
 The builder-style methods `.queue_capacity(value)` and
 `.max_inflight(value)` cover the two most common settings.
@@ -73,11 +74,15 @@ counters, sample count, and active probe state.
 
 ## `ProbeSchedule`
 
-`ProbeSchedule` describes caller-driven randomized probes. The positive and
-negative probabilities choose the probe kind at each scheduled decision; the
-remaining probability performs no probe. `min_interval` and `max_interval`
-bound the time until the next decision, so checking the schedule more often
-does not increase probe frequency. The default intervals are one to five
-seconds, and the default duration is one second. With the default 10% positive
-and 5% negative probabilities, a probe opportunity occurs every twenty seconds
-on average when the caller drives the checks continuously.
+`ProbeSchedule` describes randomized probes. The positive and negative
+probabilities choose the probe kind at each scheduled decision; the remaining
+probability performs no probe. `min_interval` and `max_interval` bound the time
+until the next decision, so checking the schedule more often does not increase
+probe frequency. The default intervals are one to five seconds, and the
+default duration is one second. With the default 10% positive and 5% negative
+probabilities, a probe opportunity occurs every twenty seconds on average.
+
+Framework adapters drive the configured schedule when an endpoint has queued
+demand behind in-flight work. The core controller and adapter methods also
+accept caller-driven probe checks for deterministic simulations or custom
+policies.

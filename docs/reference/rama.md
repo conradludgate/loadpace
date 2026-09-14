@@ -38,5 +38,6 @@ when the endpoint boundary is known at composition time.
 `load_metric` returns the controller's predicted completion cost in seconds.
 `snapshot` returns the current controller state. `start_positive_probe`,
 `start_negative_probe`, and `maybe_start_probe` mirror the core probe controls;
-the adapter wakes waiting dispatches when an active probe changes, expires, or
-causes a rate transition.
+the adapter also automatically drives the configured schedule when queued
+demand waits behind in-flight work. It wakes waiting dispatches when an active
+probe changes, expires, or causes a rate transition.

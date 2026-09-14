@@ -3,7 +3,8 @@ use loadpace::{
     DispatchReservation, DispatchState, EndpointConfig, EndpointController, InFlightRequest,
     Outcome,
 };
-use rand::Rng;
+use rand::rngs::StdRng;
+use rand::{Rng, SeedableRng};
 use std::future::Future;
 use std::marker::PhantomData;
 use std::pin::Pin;
@@ -32,6 +33,7 @@ struct Shared<S> {
     controller: Mutex<EndpointController>,
     ready: Arc<tokio::sync::Semaphore>,
     dispatch: tokio::sync::Notify,
+    probe_rng: Mutex<StdRng>,
 }
 
 type ReadinessFuture = Pin<
@@ -75,6 +77,7 @@ impl<S> AdaptiveEndpoint<S> {
                 controller: Mutex::new(EndpointController::new(config, now)),
                 ready: Arc::new(tokio::sync::Semaphore::new(queue_capacity)),
                 dispatch: tokio::sync::Notify::new(),
+                probe_rng: Mutex::new(StdRng::from_os_rng()),
             }),
             readiness_permit: None,
             readiness: Mutex::new(None),
@@ -387,22 +390,44 @@ where
         // notification between the state check and the first poll could be
         // lost, leaving this request asleep indefinitely.
         notified.as_mut().enable();
-        let (decision, probe_until) = {
+        let (decision, probe_until, next_probe_at, probe_changed) = {
             let mut controller = shared.controller.lock().expect("controller mutex poisoned");
             let current = now();
+            let before = controller.probe().current();
             controller.refresh(current);
+            let needs_probe = controller.inflight() > 0 && controller.queued() > 0;
+            if needs_probe {
+                let schedule = controller.config().probe_schedule.clone();
+                let mut rng = shared.probe_rng.lock().expect("probe RNG mutex poisoned");
+                controller.maybe_start_probe(&schedule, &mut *rng, current);
+            }
+            let active_probe = controller.probe().current();
+            let next_probe_at = if needs_probe && active_probe.is_none() {
+                controller.probe().next_probe_at()
+            } else {
+                None
+            };
             (
                 controller.dispatch_state(reservation, current),
-                controller.probe().current().map(|probe| probe.until),
+                active_probe.map(|probe| probe.until),
+                next_probe_at,
+                before != active_probe,
             )
         };
+        if probe_changed {
+            shared.dispatch.notify_waiters();
+        }
 
         match decision {
             DispatchState::Ready => {
                 break;
             }
             DispatchState::WaitUntil(deadline) => {
-                let wake_at = probe_until.map_or(deadline, |until| deadline.min(until));
+                let wake_at = [Some(deadline), probe_until, next_probe_at]
+                    .into_iter()
+                    .flatten()
+                    .min()
+                    .expect("dispatch wait must have a deadline");
                 let delay = wake_at.saturating_duration_since(now());
                 let _ = tokio::time::timeout(delay, notified.as_mut()).await;
             }

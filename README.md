@@ -165,14 +165,16 @@ The separate `loadpace-tower` crate provides:
 - `AdaptiveEndpoint<S>: tower::Service<Request>`;
 - a predicted completion-cost `tower::load::Load` metric;
 - `AdaptiveDiscovery`, which wraps inserted services with fresh controller state;
-- compatibility with Tower's `p2c::Balance`.
+- compatibility with Tower's `p2c::Balance`;
+- demand-driven automatic probing while an endpoint has queued work.
 
 The separate `loadpace-rama` crate provides:
 
 - `AdaptiveEndpoint<S>: rama::Service<Request>`;
 - `AdaptiveLayer`, for wrapping services in Rama layer stacks;
 - the same predicted completion-cost metric and controller inspection helpers;
-- bounded admission errors through `ServiceError::Rejected`.
+- bounded admission errors through `ServiceError::Rejected`;
+- demand-driven automatic probing while an endpoint has queued work.
 
 The public `simulate` function in `loadpace` provides a deterministic
 worker-pool simulator for comparing controller changes and endpoint
@@ -211,10 +213,11 @@ cargo test --workspace --all-features --all-targets
 ## Project status
 
 The first implementation covers the deterministic controller, simulator, and
-Tower and Rama adapters. Hyper remains a separate future crate. Background probe driving,
-failure classification beyond adapter-level errors, richer transport-readiness
-prediction, and production tuning remain active design areas. See [How Loadpace
-controls and routes work](docs/explanation/design.md) for the current
+Tower and Rama adapters. Hyper remains a separate future crate. Failure
+classification beyond adapter-level errors, richer transport-readiness
+prediction, RTT baseline aging, and production tuning remain active design areas.
+See [How Loadpace controls and routes work](docs/explanation/design.md) for the current
+boundaries and open questions.
 boundaries and open questions.
 
 ## License

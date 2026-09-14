@@ -69,6 +69,11 @@ impl ProbeState {
     pub fn current(&self) -> Option<Probe> {
         self.active
     }
+
+    /// Returns when the next probe decision may be made.
+    pub fn next_probe_at(&self) -> Option<Instant> {
+        self.next_probe_at
+    }
 }
 
 /// Randomized probe policy. The random source is supplied by the caller so
