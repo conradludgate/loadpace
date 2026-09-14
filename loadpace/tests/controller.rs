@@ -1,6 +1,6 @@
 use loadpace::{
-    EndpointConfig, EndpointController, Gcra, Gradient2, Gradient2Config, LatencyEstimator,
-    LatencyEstimatorConfig, Outcome, ProbeKind, ProbeSchedule, ScheduleError,
+    DispatchState, EndpointConfig, EndpointController, Gcra, Gradient2, Gradient2Config,
+    LatencyEstimator, LatencyEstimatorConfig, Outcome, ProbeKind, ProbeSchedule, ScheduleError,
 };
 use std::time::{Duration, Instant};
 
@@ -275,6 +275,37 @@ fn controller_drives_probes_when_demand_waits() {
     assert_eq!(
         controller.active_probe().map(|probe| probe.kind),
         Some(ProbeKind::Positive { delta: 1.0 })
+    );
+}
+
+#[test]
+fn dispatch_deadline_includes_controller_probe_transitions() {
+    let now = at_zero();
+    let config = EndpointConfig {
+        latency: LatencyEstimatorConfig {
+            initial_rtt: Duration::from_secs(1),
+            ..LatencyEstimatorConfig::default()
+        },
+        probe_schedule: ProbeSchedule {
+            positive_probability: 1.0,
+            negative_probability: 0.0,
+            duration: Duration::from_millis(100),
+            min_interval: Duration::from_secs(1),
+            max_interval: Duration::from_secs(1),
+            ..ProbeSchedule::default()
+        },
+        ..EndpointConfig::default()
+    };
+    let mut controller = EndpointController::new_with_seed(config, now, 5);
+
+    let first = controller.reserve(now).unwrap();
+    controller.on_dispatched(first, now).unwrap();
+    let second = controller.reserve(now).unwrap();
+
+    assert_eq!(
+        controller.dispatch_state(second, now),
+        DispatchState::WaitUntil(now + Duration::from_millis(100)),
+        "the adapter must wake when the active probe expires, before the paced slot"
     );
 }
 

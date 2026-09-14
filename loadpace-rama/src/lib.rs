@@ -286,41 +286,16 @@ impl<S> Drop for RequestGuard<S> {
     }
 }
 
-struct DispatchPlan {
-    state: DispatchState,
-    next_wakeup: Option<Instant>,
-}
-
-impl DispatchPlan {
-    fn wake_at(&self, deadline: Instant) -> Instant {
-        self.next_wakeup
-            .map_or(deadline, |candidate| deadline.min(candidate))
-    }
-}
-
-fn dispatch_plan<S>(
+fn dispatch_state<S>(
     shared: &Shared<S>,
     reservation: DispatchReservation,
     current: Instant,
-) -> DispatchPlan {
-    let (plan, probe_changed) = {
+) -> DispatchState {
+    let (state, probe_changed) = {
         let mut controller = lock(&shared.controller);
         let previous_probe = controller.active_probe();
-        controller.refresh(current);
-
-        let demand_requires_probing = controller.inflight() > 0 && controller.queued() > 0;
-
-        let active_probe = controller.active_probe();
-        let next_wakeup = match active_probe {
-            Some(probe) => Some(probe.until),
-            None if demand_requires_probing => controller.next_probe_at(),
-            None => None,
-        };
-        let plan = DispatchPlan {
-            state: controller.dispatch_state(reservation, current),
-            next_wakeup,
-        };
-        (plan, previous_probe != active_probe)
+        let state = controller.dispatch_state(reservation, current);
+        (state, previous_probe != controller.active_probe())
     };
 
     // Wake waiters after releasing the controller lock so they observe the
@@ -328,7 +303,7 @@ fn dispatch_plan<S>(
     if probe_changed {
         shared.dispatch.notify_waiters();
     }
-    plan
+    state
 }
 
 async fn wait_for_dispatch<S>(shared: &Shared<S>, reservation: DispatchReservation) {
@@ -340,12 +315,10 @@ async fn wait_for_dispatch<S>(shared: &Shared<S>, reservation: DispatchReservati
         // lost, leaving this request asleep indefinitely.
         notified.as_mut().enable();
 
-        let plan = dispatch_plan(shared, reservation, now());
-        match plan.state {
+        match dispatch_state(shared, reservation, now()) {
             DispatchState::Ready => return,
             DispatchState::WaitUntil(deadline) => {
-                let wake_at = plan.wake_at(deadline);
-                let delay = wake_at.saturating_duration_since(now());
+                let delay = deadline.saturating_duration_since(now());
                 let _ = tokio::time::timeout(delay, notified.as_mut()).await;
             }
             DispatchState::WaitForPrevious | DispatchState::InflightLimit => {
@@ -355,13 +328,6 @@ async fn wait_for_dispatch<S>(shared: &Shared<S>, reservation: DispatchReservati
                 unreachable!("a live request reservation cannot be cancelled externally");
             }
         }
-    }
-}
-
-fn commit_dispatch<S>(shared: &Shared<S>, reservation: DispatchReservation) -> InFlightRequest {
-    match lock(&shared.controller).on_dispatched(reservation, now()) {
-        Some(active) => active,
-        None => unreachable!("a ready dispatch reservation must be dispatchable"),
     }
 }
 
@@ -377,9 +343,16 @@ where
     S::Error: Send + 'static,
     Request: Send + 'static,
 {
-    wait_for_dispatch(&shared, reservation).await;
-
-    let active = commit_dispatch(&shared, reservation);
+    let active = loop {
+        wait_for_dispatch(&shared, reservation).await;
+        let dispatch = {
+            let mut controller = lock(&shared.controller);
+            controller.on_dispatched(reservation, now())
+        };
+        if let Ok(active) = dispatch {
+            break active;
+        }
+    };
     guard.mark_dispatched(active);
     // Removing the FIFO head can make the next reservation eligible. Wake it
     // even when its old timer has not elapsed because the committed TAT may

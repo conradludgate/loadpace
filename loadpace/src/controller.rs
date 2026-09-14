@@ -93,6 +93,10 @@ impl InFlightRequest {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DispatchState {
     Ready,
+    /// The controller should be checked again at this instant.
+    ///
+    /// This may be the reservation's pacing deadline or an earlier internal
+    /// controller transition, such as a probe starting or ending.
     WaitUntil(Instant),
     WaitForPrevious,
     InflightLimit,
@@ -298,27 +302,45 @@ impl EndpointController {
             }
             return DispatchState::Cancelled;
         }
+        // Keep all time-driven policy in the controller. Framework adapters
+        // only need to arrange a wakeup for the deadline returned below.
+        self.refresh(now);
+        let front = self
+            .pending
+            .front()
+            .expect("validated reservation must remain in the queue");
         if self.inflight >= self.config.max_inflight {
             return DispatchState::InflightLimit;
         }
         if front.scheduled_at > now {
-            return DispatchState::WaitUntil(front.scheduled_at);
+            let wake_at = self
+                .next_dispatch_refresh_at()
+                .map_or(front.scheduled_at, |refresh_at| {
+                    front.scheduled_at.min(refresh_at)
+                });
+            return DispatchState::WaitUntil(wake_at);
         }
         DispatchState::Ready
     }
 
     /// Commits the oldest reservation after the underlying service reports
     /// readiness. Dispatches are intentionally FIFO inside one endpoint.
+    /// Returns the reservation's current state without changing it when it is
+    /// not dispatchable.
     pub fn on_dispatched(
         &mut self,
         reservation: DispatchReservation,
         now: Instant,
-    ) -> Option<InFlightRequest> {
-        if self.dispatch_state(reservation, now) != DispatchState::Ready {
-            return None;
+    ) -> Result<InFlightRequest, DispatchState> {
+        let state = self.dispatch_state(reservation, now);
+        if state != DispatchState::Ready {
+            return Err(state);
         }
 
-        let pending = self.pending.pop_front()?;
+        let pending = self
+            .pending
+            .pop_front()
+            .expect("ready reservation must be at the front of the queue");
         debug_assert_eq!(pending.id, reservation.id);
         self.queued -= 1;
         self.inflight += 1;
@@ -326,7 +348,7 @@ impl EndpointController {
         self.pacer.commit(now);
         self.rebuild_virtual_queue(now);
 
-        Some(InFlightRequest {
+        Ok(InFlightRequest {
             controller_id: self.controller_id,
             id: reservation.id,
             dispatched_at: now,
@@ -407,11 +429,6 @@ impl EndpointController {
         self.probe.current()
     }
 
-    /// Returns the next time the controller may make a probe decision.
-    pub fn next_probe_at(&self) -> Option<Instant> {
-        self.probe.next_probe_at()
-    }
-
     /// Predicts when one additional request would complete if current
     /// conditions remain stable.
     pub fn predicted_completion(&self, now: Instant) -> Instant {
@@ -465,6 +482,20 @@ impl EndpointController {
             .map(|entry| saturating_add(entry.scheduled_at, self.pacer.interval()))
             .unwrap_or_else(|| self.pacer.next_at(now))
             .max(now)
+    }
+
+    fn next_dispatch_refresh_at(&self) -> Option<Instant> {
+        if let Some(probe) = self.probe.current() {
+            return Some(probe.until);
+        }
+
+        let probing_has_demand =
+            self.latency.samples() > 0 || (self.inflight > 0 && self.queued > 0);
+        if probing_has_demand {
+            self.probe.next_probe_at()
+        } else {
+            None
+        }
     }
 
     fn update_rate(&mut self, now: Instant) {

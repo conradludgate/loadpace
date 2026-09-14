@@ -255,7 +255,7 @@ fn drive_all(endpoints: &mut [EndpointRuntime], completions: &mut Vec<Completion
                     else {
                         break;
                     };
-                    let Some(active) = endpoint.controller.on_dispatched(reservation, now) else {
+                    let Ok(active) = endpoint.controller.on_dispatched(reservation, now) else {
                         break;
                     };
                     endpoint.pending.pop_front();

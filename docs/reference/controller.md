@@ -27,8 +27,8 @@ The builder-style methods `.queue_capacity(value)` and
 | `new(config, now)` | Creates fresh endpoint state and an immediately available first pacing slot |
 | `new_with_seed(config, now, seed)` | Creates fresh state with deterministic probe entropy for simulations and tests |
 | `reserve(now)` | Appends a bounded virtual queue reservation |
-| `dispatch_state(reservation, now)` | Reports `Ready`, a pacing deadline, FIFO wait, inflight limit, or cancellation |
-| `on_dispatched(reservation, now)` | Commits a reservation after the transport is ready |
+| `dispatch_state(reservation, now)` | Refreshes time-driven policy, then reports `Ready`, a recheck deadline, FIFO wait, inflight limit, or cancellation |
+| `on_dispatched(reservation, now)` | Atomically commits a ready reservation, or returns its current `DispatchState` |
 | `on_complete(request, outcome, latency, now)` | Releases inflight state and updates feedback; returns whether the token belonged to an active request |
 | `cancel(reservation, now)` | Removes a queued reservation and rebuilds the virtual tail |
 | `load(now)` | Returns predicted completion delay in seconds; lower is better |

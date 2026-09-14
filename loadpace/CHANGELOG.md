@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Make `dispatch_state` own time-driven controller refreshes and return probe
+  transition deadlines to adapters.
+- Make `on_dispatched` return the current `DispatchState` when a reservation
+  cannot be committed atomically.
+
 ## [0.1.0-rc.3](https://github.com/conradludgate/loadpace/compare/loadpace-v0.1.0-rc.2...loadpace-v0.1.0-rc.3) - 2026-09-14
 
 ### Added
