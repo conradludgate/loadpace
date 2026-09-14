@@ -370,11 +370,12 @@ async fn queued_demand_drives_automatic_probing() {
     let first = tokio::spawn(endpoint.clone().oneshot(1));
     started.notified().await;
     let second = tokio::spawn(endpoint.clone().oneshot(2));
+    tokio::time::advance(Duration::from_secs(1)).await;
     while endpoint.snapshot().active_probe.is_none() {
         tokio::task::yield_now().await;
     }
 
-    assert_eq!(starts.load(Ordering::Relaxed), 1);
+    assert_eq!(starts.load(Ordering::Relaxed), 2);
     assert!(matches!(
         endpoint.snapshot().active_probe.unwrap().kind,
         loadpace::ProbeKind::Positive { .. }
