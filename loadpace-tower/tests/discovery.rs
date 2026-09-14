@@ -3,10 +3,36 @@ use futures_util::stream;
 use loadpace::EndpointConfig;
 use loadpace_tower::AdaptiveDiscovery;
 use std::future::Future;
+use std::marker::PhantomPinned;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use tower::discover::Change;
 use tower::{BoxError, Service, ServiceExt};
+
+pin_project_lite::pin_project! {
+    struct NotUnpinStream<S> {
+        #[pin]
+        inner: S,
+        _pin: PhantomPinned,
+    }
+}
+
+impl<S> NotUnpinStream<S> {
+    fn new(inner: S) -> Self {
+        Self {
+            inner,
+            _pin: PhantomPinned,
+        }
+    }
+}
+
+impl<S: futures_core::Stream> futures_core::Stream for NotUnpinStream<S> {
+    type Item = S::Item;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        self.project().inner.poll_next(cx)
+    }
+}
 
 #[derive(Clone, Default)]
 struct BoxedEcho;
@@ -59,4 +85,21 @@ async fn discovery_can_feed_towers_p2c_balance() {
     let balance = tower::balance::p2c::Balance::new(discovery);
 
     assert_eq!(balance.oneshot(99).await.unwrap(), 99);
+}
+
+#[tokio::test(start_paused = true)]
+async fn discovery_accepts_a_non_unpin_stream() {
+    let changes = NotUnpinStream::new(stream::iter([
+        Ok::<_, BoxError>(Change::Insert(7_u64, BoxedEcho)),
+        Ok::<_, BoxError>(Change::Remove(7_u64)),
+    ]));
+    let discovery = AdaptiveDiscovery::<_, u64>::new(changes, EndpointConfig::default());
+    futures_util::pin_mut!(discovery);
+
+    let insert = discovery.next().await.unwrap().unwrap();
+    assert!(matches!(insert, Change::Insert(7, _)));
+    assert!(matches!(
+        discovery.next().await.unwrap().unwrap(),
+        Change::Remove(7)
+    ));
 }

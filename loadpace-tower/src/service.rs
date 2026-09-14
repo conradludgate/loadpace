@@ -3,6 +3,7 @@ use loadpace::{
     DispatchReservation, DispatchState, EndpointConfig, EndpointController, InFlightRequest,
     Outcome,
 };
+use pin_project_lite::pin_project;
 use rand::Rng;
 use rand::rngs::StdRng;
 use std::future::Future;
@@ -138,16 +139,19 @@ impl<S> AdaptiveEndpoint<S> {
     }
 }
 
-/// Maps a Tower discovery stream into freshly initialized adaptive endpoints.
-///
-/// The wrapper intentionally creates new controller state for every insert.
-/// This is the safe behavior when discovery removes and later reuses an
-/// endpoint key; state retention can be added without changing the discovery
-/// contract once churn behavior is better understood.
-pub struct AdaptiveDiscovery<D, Request> {
-    inner: D,
-    config: EndpointConfig,
-    _request: PhantomData<fn() -> Request>,
+pin_project! {
+    /// Maps a Tower discovery stream into freshly initialized adaptive endpoints.
+    ///
+    /// The wrapper intentionally creates new controller state for every insert.
+    /// This is the safe behavior when discovery removes and later reuses an
+    /// endpoint key; state retention can be added without changing the discovery
+    /// contract once churn behavior is better understood.
+    pub struct AdaptiveDiscovery<D, Request> {
+        #[pin]
+        inner: D,
+        config: EndpointConfig,
+        _request: PhantomData<fn() -> Request>,
+    }
 }
 
 impl<D, Request> AdaptiveDiscovery<D, Request> {
@@ -166,7 +170,7 @@ impl<D, Request> AdaptiveDiscovery<D, Request> {
 
 impl<D, Request, K, S> Stream for AdaptiveDiscovery<D, Request>
 where
-    D: TryStream<Ok = Change<K, S>> + Unpin,
+    D: TryStream<Ok = Change<K, S>>,
     K: Eq,
     S: Service<Request> + Send + 'static,
     S::Future: Send + 'static,
@@ -177,8 +181,8 @@ where
     type Item = Result<Change<K, AdaptiveEndpoint<S>>, D::Error>;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let this = self.get_mut();
-        Pin::new(&mut this.inner).try_poll_next(cx).map(|change| {
+        let this = self.project();
+        this.inner.try_poll_next(cx).map(|change| {
             change.map(|result| {
                 result.map(|change| match change {
                     Change::Insert(key, service) => {

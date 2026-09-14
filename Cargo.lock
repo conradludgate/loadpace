@@ -544,6 +544,7 @@ dependencies = [
  "futures-core",
  "futures-util",
  "loadpace",
+ "pin-project-lite",
  "rand",
  "tokio",
  "tower",
