@@ -3,8 +3,60 @@
 Rama integration for the [`loadpace`](https://crates.io/crates/loadpace)
 adaptive client-side load-balancing and backpressure controller.
 
-The adapter wraps a Rama `Service`, reserving a bounded virtual scheduling
-slot before dispatch and recording the actual service latency afterwards.
+## Usage
+
+```toml
+[dependencies]
+loadpace = "0.1"
+loadpace-rama = "0.1"
+rama = "0.4"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
+```
+
+Wrap a Rama [`Service`](https://docs.rs/rama/0.4/rama/trait.Service.html)
+with `AdaptiveEndpoint`:
+
+```rust
+use std::convert::Infallible;
+use loadpace::EndpointConfig;
+use loadpace_rama::AdaptiveEndpoint;
+use rama::Service;
+
+#[derive(Clone)]
+struct Double;
+
+impl Service<u64> for Double {
+    type Output = u64;
+    type Error = Infallible;
+
+    async fn serve(&self, request: u64) -> Result<Self::Output, Self::Error> {
+        Ok(request * 2)
+    }
+}
+
+#[tokio::main]
+async fn main() -> Result<(), loadpace_rama::ServiceError<Infallible>> {
+    let endpoint = AdaptiveEndpoint::new(Double, EndpointConfig::default());
+    assert_eq!(endpoint.serve(21).await?, 42);
+    Ok(())
+}
+```
+
+Rama has no `poll_ready` reservation phase. `AdaptiveEndpoint::serve` admits
+the request synchronously into a bounded virtual scheduling horizon. If that
+horizon is full, the future resolves to `ServiceError::Rejected` without
+calling the inner service. If an admitted future is dropped before dispatch,
+its reservation is cancelled; cancellation after dispatch is recorded as a
+failure sample.
+
+Use `AdaptiveLayer` when composing Rama layers:
+
+```rust
+use loadpace::EndpointConfig;
+use loadpace_rama::AdaptiveLayer;
+
+let endpoint = AdaptiveLayer::new(EndpointConfig::default()).layer(inner);
+```
 
 This crate is experimental. See the [Loadpace repository](https://github.com/conradludgate/loadpace)
 for the design and current documentation.

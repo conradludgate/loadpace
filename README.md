@@ -3,7 +3,8 @@
 Runtime-independent adaptive client-side load balancing and backpressure.
 
 The core `loadpace` crate contains the controller and simulator. Framework
-adapters are separate crates, starting with [`loadpace-tower`](https://crates.io/crates/loadpace-tower).
+adapters are separate crates, starting with [`loadpace-tower`](https://crates.io/crates/loadpace-tower)
+and [`loadpace-rama`](https://crates.io/crates/loadpace-rama).
 
 Loadpace treats client-side load balancing as a control problem:
 
@@ -31,6 +32,7 @@ Learn by building a small paced client:
 Use these when you already know what you want to accomplish:
 
 - [Integrate dynamic discovery with Tower P2C](docs/how-to/integrate-with-tower.md)
+- [Integrate a Rama service](docs/how-to/integrate-with-rama.md)
 - [Run a deterministic simulation](docs/how-to/run-simulator.md)
 - [Tune queue and controller settings](docs/how-to/tune-an-endpoint.md)
 
@@ -40,8 +42,10 @@ Look up the public types, defaults, and state transitions:
 
 - [Controller and configuration reference](docs/reference/controller.md)
 - [Tower adapter reference](docs/reference/tower.md)
+- [Rama adapter reference](docs/reference/rama.md)
 - [Rust API documentation](https://docs.rs/loadpace)
 - [Tower API documentation](https://docs.rs/loadpace-tower)
+- [Rama API documentation](https://docs.rs/loadpace-rama)
 
 ### Explanation
 
@@ -71,6 +75,16 @@ tower = { version = "0.5", features = ["util"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
 
+For Rama integration, add the adapter and Rama itself:
+
+```toml
+[dependencies]
+loadpace = "0.1"
+loadpace-rama = "0.1"
+rama = "0.4"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
+```
+
 ## Minimal Tower example
 
 Wrap any suitable Tower service in an adaptive endpoint from `loadpace-tower`:
@@ -97,6 +111,42 @@ Ok(())
 For dynamic endpoints, use `loadpace_tower::AdaptiveDiscovery` and Tower's existing
 `tower::balance::p2c::Balance`; see the [Tower integration guide](docs/how-to/integrate-with-tower.md).
 
+## Minimal Rama example
+
+Rama services use `serve` directly, so the adapter reserves a bounded
+scheduling slot when the call is made:
+
+```rust
+use std::convert::Infallible;
+use loadpace::EndpointConfig;
+use loadpace_rama::AdaptiveEndpoint;
+use rama::Service;
+
+#[derive(Clone)]
+struct Double;
+
+impl Service<u64> for Double {
+    type Output = u64;
+    type Error = Infallible;
+
+    async fn serve(&self, request: u64) -> Result<Self::Output, Self::Error> {
+        Ok(request * 2)
+    }
+}
+
+#[tokio::main]
+async fn main() -> Result<(), loadpace_rama::ServiceError<Infallible>> {
+    let endpoint = AdaptiveEndpoint::new(Double, EndpointConfig::default());
+    assert_eq!(endpoint.serve(21).await?, 42);
+    Ok(())
+}
+```
+
+For Rama's direct service model, a full scheduling horizon returns
+`ServiceError::Rejected` from the returned future. See the [Rama integration
+guide](docs/how-to/integrate-with-rama.md) for handling rejection and
+wrapping a service with `AdaptiveLayer`.
+
 ## What the crate provides
 
 The `loadpace` crate's `EndpointController` is the runtime-independent core.
@@ -116,6 +166,13 @@ The separate `loadpace-tower` crate provides:
 - a predicted completion-cost `tower::load::Load` metric;
 - `AdaptiveDiscovery`, which wraps inserted services with fresh controller state;
 - compatibility with Tower's `p2c::Balance`.
+
+The separate `loadpace-rama` crate provides:
+
+- `AdaptiveEndpoint<S>: rama::Service<Request>`;
+- `AdaptiveLayer`, for wrapping services in Rama layer stacks;
+- the same predicted completion-cost metric and controller inspection helpers;
+- bounded admission errors through `ServiceError::Rejected`.
 
 The public `simulate` function in `loadpace` provides a deterministic
 worker-pool simulator for comparing controller changes and endpoint
@@ -154,8 +211,7 @@ cargo test --workspace --all-features --all-targets
 ## Project status
 
 The first implementation covers the deterministic controller, simulator, and
-Tower adapter with dynamic discovery and P2C integration. Hyper and Rama
-adapters are intentionally separate future crates. Background probe driving,
+Tower and Rama adapters. Hyper remains a separate future crate. Background probe driving,
 failure classification beyond adapter-level errors, richer transport-readiness
 prediction, and production tuning remain active design areas. See [How Loadpace
 controls and routes work](docs/explanation/design.md) for the current
