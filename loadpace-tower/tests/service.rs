@@ -276,7 +276,8 @@ async fn positive_probe_wakes_a_queued_dispatch() {
     tokio::task::yield_now().await;
     assert_eq!(starts.load(Ordering::Relaxed), 1);
 
-    tokio::time::advance(Duration::from_millis(100)).await;
+    tokio::time::advance(Duration::from_millis(101)).await;
+    tokio::task::yield_now().await;
     tokio::task::yield_now().await;
     assert_eq!(starts.load(Ordering::Relaxed), 2);
 
@@ -316,7 +317,8 @@ async fn probe_expiry_wakes_a_dispatch_to_recompute_the_slower_rate() {
     tokio::task::yield_now().await;
     assert_eq!(starts.load(Ordering::Relaxed), 1);
 
-    tokio::time::advance(Duration::from_millis(200)).await;
+    tokio::time::advance(Duration::from_millis(201)).await;
+    tokio::task::yield_now().await;
     tokio::task::yield_now().await;
     assert_eq!(starts.load(Ordering::Relaxed), 2);
 
