@@ -1,6 +1,6 @@
 use loadpace::{
-    EndpointConfig, Gradient2Config, LatencyEstimatorConfig, SimulatedEndpoint, SimulationConfig,
-    ProbeSchedule, simulate,
+    EndpointConfig, Gradient2Config, LatencyEstimatorConfig, ProbeSchedule, SimulatedEndpoint,
+    SimulationConfig, simulate,
 };
 use std::time::Duration;
 
