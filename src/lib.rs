@@ -3,6 +3,8 @@
 //! This crate contains the deterministic controller and simulator. Framework
 //! integrations live in separate crates such as `loadpace-tower`.
 
+#![forbid(unsafe_code)]
+
 mod controller;
 mod gcra;
 mod gradient;
