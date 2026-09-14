@@ -13,6 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Remove a redundant semaphore `Arc` and unnecessary `Send + 'static` bounds
+  from endpoint response and error types.
 - Make dispatch wakeup timing controller-owned and simplify the Tower request
   lifecycle around queued, in-flight, and finished states.
 - Remove the unnecessary request type parameter and service bounds from

@@ -3,6 +3,7 @@ use loadpace_tower::{AdaptiveEndpoint, AdaptiveLayer};
 use std::cell::Cell;
 use std::future::Future;
 use std::pin::Pin;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::task::{Context, Poll};
@@ -47,6 +48,38 @@ impl Service<u64> for Failing {
 
 struct LocalEcho {
     calls: Cell<usize>,
+}
+
+struct NonSendOutput;
+
+struct NonSendOutputFuture {
+    value: Option<u64>,
+}
+
+impl Future for NonSendOutputFuture {
+    type Output = Result<Rc<u64>, Rc<&'static str>>;
+
+    fn poll(mut self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Self::Output> {
+        Poll::Ready(Ok(Rc::new(
+            self.value.take().expect("future polled after completion"),
+        )))
+    }
+}
+
+impl Service<u64> for NonSendOutput {
+    type Response = Rc<u64>;
+    type Error = Rc<&'static str>;
+    type Future = NonSendOutputFuture;
+
+    fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        Poll::Ready(Ok(()))
+    }
+
+    fn call(&mut self, request: u64) -> Self::Future {
+        NonSendOutputFuture {
+            value: Some(request),
+        }
+    }
 }
 
 impl Service<u64> for LocalEcho {
@@ -166,6 +199,18 @@ async fn layer_wraps_services_that_are_send_but_not_sync() {
         calls: Cell::new(0),
     });
     assert_eq!(endpoint.oneshot(42).await.unwrap(), 42);
+}
+
+#[tokio::test(start_paused = true)]
+async fn endpoint_does_not_require_send_response_or_error_types() {
+    let endpoint = AdaptiveEndpoint::new_at(
+        NonSendOutput,
+        config(1, Duration::from_millis(1)),
+        Instant::now(),
+    );
+
+    let response = endpoint.oneshot(42).await.unwrap();
+    assert_eq!(*response, 42);
 }
 
 #[tokio::test(start_paused = true)]

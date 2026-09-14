@@ -31,7 +31,7 @@ records a dispatched request as failed.
 
 `AdaptiveLayer` wraps a service in an endpoint and can be used directly in a
 `tower::ServiceBuilder` stack. The inner service needs to be `Send`, but does
-not need to be `Sync`.
+not need to be `Sync`; its response and error types do not need to be `Send`.
 
 `snapshot` returns controller metrics. Probes are controller-owned and are
 automatically considered as the adapter refreshes endpoint state during normal

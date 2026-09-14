@@ -31,7 +31,6 @@ struct Shared<S> {
     service: tokio::sync::Mutex<S>,
     controller: Mutex<EndpointController>,
     dispatch: tokio::sync::Notify,
-    admission: Arc<tokio::sync::Semaphore>,
 }
 
 // Core deliberately uses `std::time::Instant`; Tower waits use Tokio's
@@ -67,16 +66,14 @@ impl<S> AdaptiveEndpoint<S> {
 
     pub fn new_at(inner: S, config: EndpointConfig, now: Instant) -> Self {
         let queue_capacity = config.queue_capacity;
-        let admission = Arc::new(tokio::sync::Semaphore::new(queue_capacity));
         Self {
             shared: Arc::new(Shared {
                 service: tokio::sync::Mutex::new(inner),
                 controller: Mutex::new(EndpointController::new(config, now)),
                 dispatch: tokio::sync::Notify::new(),
-                admission: Arc::clone(&admission),
             }),
             admission_permit: None,
-            admission: PollSemaphore::new(admission),
+            admission: PollSemaphore::new(Arc::new(tokio::sync::Semaphore::new(queue_capacity))),
         }
     }
 
@@ -188,7 +185,9 @@ impl<S> Clone for AdaptiveEndpoint<S> {
         Self {
             shared: Arc::clone(&self.shared),
             admission_permit: None,
-            admission: PollSemaphore::new(Arc::clone(&self.shared.admission)),
+            // `PollSemaphore::clone` resets the per-handle acquire future but
+            // retains the same underlying `Arc<Semaphore>`.
+            admission: self.admission.clone(),
         }
     }
 }
@@ -205,8 +204,6 @@ impl<S, Request> Service<Request> for AdaptiveEndpoint<S>
 where
     S: Service<Request> + Send + 'static,
     S::Future: Send + 'static,
-    S::Response: Send + 'static,
-    S::Error: Send + 'static,
     Request: Send + 'static,
 {
     type Response = S::Response;
@@ -258,7 +255,10 @@ impl<T, E> Future for ResponseFuture<T, E> {
 }
 
 enum RequestState {
-    Queued(DispatchReservation),
+    Queued {
+        reservation: DispatchReservation,
+        admission_permit: tokio::sync::OwnedSemaphorePermit,
+    },
     InFlight(InFlightRequest),
     Finished,
 }
@@ -266,7 +266,6 @@ enum RequestState {
 struct PendingRequest<S> {
     shared: Arc<Shared<S>>,
     state: RequestState,
-    admission_permit: Option<tokio::sync::OwnedSemaphorePermit>,
 }
 
 impl<S> PendingRequest<S> {
@@ -277,14 +276,16 @@ impl<S> PendingRequest<S> {
     ) -> Self {
         Self {
             shared,
-            state: RequestState::Queued(reservation),
-            admission_permit: Some(admission_permit),
+            state: RequestState::Queued {
+                reservation,
+                admission_permit,
+            },
         }
     }
 
     fn reservation(&self) -> DispatchReservation {
-        match self.state {
-            RequestState::Queued(reservation) => reservation,
+        match &self.state {
+            RequestState::Queued { reservation, .. } => *reservation,
             RequestState::InFlight(_) | RequestState::Finished => {
                 panic!("only a queued request has a dispatch reservation")
             }
@@ -292,10 +293,10 @@ impl<S> PendingRequest<S> {
     }
 
     fn mark_dispatched(&mut self, active: InFlightRequest) {
+        // Replacing the queued state drops its admission permit. The
+        // controller has already removed the request from its virtual queue,
+        // so the next admitted caller observes the updated capacity.
         self.state = RequestState::InFlight(active);
-        // The controller has removed the request from its virtual queue, so
-        // releasing this permit cannot expose more work than the queue allows.
-        self.admission_permit = None;
     }
 
     fn finish(&mut self, outcome: Outcome, now: Instant) {
@@ -304,14 +305,17 @@ impl<S> PendingRequest<S> {
                 let latency = now.saturating_duration_since(active.dispatched_at());
                 lock(&self.shared.controller).on_complete(active, outcome, latency, now);
             }
-            RequestState::Queued(reservation) => {
+            RequestState::Queued {
+                reservation,
+                admission_permit,
+            } => {
                 lock(&self.shared.controller).cancel(reservation, now);
+                // Keep the permit until after cancellation updates the
+                // controller's queue count.
+                drop(admission_permit);
             }
             RequestState::Finished => return,
         }
-        // Release capacity only after the controller has been updated. A
-        // newly woken caller must observe the cancellation/completion first.
-        self.admission_permit = None;
         self.shared.dispatch.notify_waiters();
     }
 
@@ -387,12 +391,14 @@ impl<S> PendingRequest<S> {
         self.wait_until_dispatchable().await;
 
         let response = match self.start(request).await {
-            Ok(response) => response.await,
+            Ok(response) => response,
             Err(error) => {
                 lock(&self.shared.controller).on_admission_failure(now());
-                Err(error)
+                self.finish(Outcome::Failure, now());
+                return Err(error);
             }
         };
+        let response = response.await;
         let outcome = if response.is_ok() {
             Outcome::Success
         } else {
