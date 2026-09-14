@@ -140,12 +140,12 @@ impl<S> AdaptiveEndpoint<S> {
 }
 
 pin_project! {
-    /// Maps a Tower discovery stream into freshly initialized adaptive endpoints.
-    ///
-    /// The wrapper intentionally creates new controller state for every insert.
-    /// This is the safe behavior when discovery removes and later reuses an
-    /// endpoint key; state retention can be added without changing the discovery
-    /// contract once churn behavior is better understood.
+    #[doc = "Maps a Tower discovery stream into freshly initialized adaptive endpoints."]
+    #[doc = ""]
+    #[doc = "The wrapper intentionally creates new controller state for every insert."]
+    #[doc = "This is the safe behavior when discovery removes and later reuses an"]
+    #[doc = "endpoint key; state retention can be added without changing the discovery"]
+    #[doc = "contract once churn behavior is better understood."]
     pub struct AdaptiveDiscovery<D, Request> {
         #[pin]
         inner: D,
