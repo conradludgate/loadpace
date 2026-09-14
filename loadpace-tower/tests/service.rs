@@ -271,6 +271,7 @@ async fn positive_probe_wakes_a_queued_dispatch() {
         tokio::task::yield_now().await;
     }
     endpoint.start_positive_probe(1.0, Instant::now() + Duration::from_secs(1));
+    tokio::task::yield_now().await;
 
     tokio::time::advance(Duration::from_millis(400)).await;
     tokio::task::yield_now().await;
@@ -310,6 +311,7 @@ async fn probe_expiry_wakes_a_dispatch_to_recompute_the_slower_rate() {
         tokio::task::yield_now().await;
     }
     endpoint.start_negative_probe(0.5, Instant::now() + Duration::from_millis(200));
+    tokio::task::yield_now().await;
 
     tokio::time::advance(Duration::from_millis(200)).await;
     tokio::task::yield_now().await;
