@@ -87,6 +87,8 @@ impl LatencyEstimator {
         Duration::from_secs_f64(self.long)
     }
 
+    /// Returns the minimum observed RTT, or the initial estimate before the
+    /// first successful sample arrives.
     pub fn baseline(&self) -> Duration {
         Duration::from_secs_f64(
             self.baseline

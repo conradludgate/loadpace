@@ -248,6 +248,84 @@ async fn endpoint_probe_checks_are_time_gated() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn positive_probe_wakes_a_queued_dispatch() {
+    let started = Arc::new(Notify::new());
+    let release = Arc::new(Notify::new());
+    let starts = Arc::new(AtomicUsize::new(0));
+    let endpoint = AdaptiveEndpoint::new_at(
+        Held {
+            started: Arc::clone(&started),
+            release: Arc::clone(&release),
+            starts: Arc::clone(&starts),
+        },
+        config(2, Duration::from_secs(1)),
+        Instant::now(),
+    );
+
+    let first = tokio::spawn(endpoint.clone().oneshot(1));
+    started.notified().await;
+    tokio::time::advance(Duration::from_millis(100)).await;
+
+    let second = tokio::spawn(endpoint.clone().oneshot(2));
+    while endpoint.snapshot().queued != 1 {
+        tokio::task::yield_now().await;
+    }
+    endpoint.start_positive_probe(1.0, Instant::now() + Duration::from_secs(1));
+
+    tokio::time::advance(Duration::from_millis(400)).await;
+    tokio::task::yield_now().await;
+    assert_eq!(starts.load(Ordering::Relaxed), 1);
+
+    tokio::time::advance(Duration::from_millis(100)).await;
+    tokio::task::yield_now().await;
+    assert_eq!(starts.load(Ordering::Relaxed), 2);
+
+    release.notify_waiters();
+    assert_eq!(first.await.unwrap().unwrap(), 1);
+    assert_eq!(second.await.unwrap().unwrap(), 2);
+}
+
+#[tokio::test(start_paused = true)]
+async fn probe_expiry_wakes_a_dispatch_to_recompute_the_slower_rate() {
+    let started = Arc::new(Notify::new());
+    let release = Arc::new(Notify::new());
+    let starts = Arc::new(AtomicUsize::new(0));
+    let endpoint = AdaptiveEndpoint::new_at(
+        Held {
+            started: Arc::clone(&started),
+            release: Arc::clone(&release),
+            starts: Arc::clone(&starts),
+        },
+        config(2, Duration::from_secs(1)),
+        Instant::now(),
+    );
+
+    let first = tokio::spawn(endpoint.clone().oneshot(1));
+    started.notified().await;
+    tokio::time::advance(Duration::from_millis(100)).await;
+
+    let second = tokio::spawn(endpoint.clone().oneshot(2));
+    while endpoint.snapshot().queued != 1 {
+        tokio::task::yield_now().await;
+    }
+    endpoint.start_negative_probe(0.5, Instant::now() + Duration::from_millis(200));
+
+    tokio::time::advance(Duration::from_millis(200)).await;
+    tokio::task::yield_now().await;
+    tokio::time::advance(Duration::from_millis(700)).await;
+    tokio::task::yield_now().await;
+    assert_eq!(starts.load(Ordering::Relaxed), 1);
+
+    tokio::time::advance(Duration::from_millis(200)).await;
+    tokio::task::yield_now().await;
+    assert_eq!(starts.load(Ordering::Relaxed), 2);
+
+    release.notify_waiters();
+    assert_eq!(first.await.unwrap().unwrap(), 1);
+    assert_eq!(second.await.unwrap().unwrap(), 2);
+}
+
+#[tokio::test(start_paused = true)]
 async fn dropping_a_queued_response_releases_its_slot() {
     let mut endpoint =
         AdaptiveEndpoint::new_at(Echo, config(1, Duration::from_secs(1)), Instant::now());

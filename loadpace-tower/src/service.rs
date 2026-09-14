@@ -75,29 +75,54 @@ impl<S> AdaptiveEndpoint<S> {
     }
 
     pub fn snapshot(&self) -> loadpace::ControllerSnapshot {
-        self.shared
-            .controller
-            .lock()
-            .expect("controller mutex poisoned")
-            .snapshot(Instant::now())
+        let (snapshot, changed) = {
+            let mut controller = self
+                .shared
+                .controller
+                .lock()
+                .expect("controller mutex poisoned");
+            let before = controller.probe().current();
+            let snapshot = controller.snapshot(Instant::now());
+            (snapshot, before != controller.probe().current())
+        };
+        if changed {
+            self.shared.dispatch.notify_waiters();
+        }
+        snapshot
     }
 
     pub fn start_positive_probe(&self, delta: f64, until: Instant) {
         let now = Instant::now();
-        self.shared
-            .controller
-            .lock()
-            .expect("controller mutex poisoned")
-            .start_positive_probe(delta, until, now);
+        let changed = {
+            let mut controller = self
+                .shared
+                .controller
+                .lock()
+                .expect("controller mutex poisoned");
+            let before = controller.probe().current();
+            controller.start_positive_probe(delta, until, now);
+            before != controller.probe().current()
+        };
+        if changed {
+            self.shared.dispatch.notify_waiters();
+        }
     }
 
     pub fn start_negative_probe(&self, factor: f64, until: Instant) {
         let now = Instant::now();
-        self.shared
-            .controller
-            .lock()
-            .expect("controller mutex poisoned")
-            .start_negative_probe(factor, until, now);
+        let changed = {
+            let mut controller = self
+                .shared
+                .controller
+                .lock()
+                .expect("controller mutex poisoned");
+            let before = controller.probe().current();
+            controller.start_negative_probe(factor, until, now);
+            before != controller.probe().current()
+        };
+        if changed {
+            self.shared.dispatch.notify_waiters();
+        }
     }
 
     /// Gives a caller-provided RNG a time-gated chance to start a probe.
@@ -110,22 +135,38 @@ impl<S> AdaptiveEndpoint<S> {
         rng: &mut R,
     ) -> Option<loadpace::Probe> {
         let now = Instant::now();
-        self.shared
-            .controller
-            .lock()
-            .expect("controller mutex poisoned")
-            .maybe_start_probe(schedule, rng, now)
+        let (probe, changed) = {
+            let mut controller = self
+                .shared
+                .controller
+                .lock()
+                .expect("controller mutex poisoned");
+            let before = controller.probe().current();
+            let probe = controller.maybe_start_probe(schedule, rng, now);
+            (probe, before != controller.probe().current())
+        };
+        if changed {
+            self.shared.dispatch.notify_waiters();
+        }
+        probe
     }
 
     pub fn load_metric(&self) -> LoadMetric {
-        let mut controller = self
-            .shared
-            .controller
-            .lock()
-            .expect("controller mutex poisoned");
-        let now = Instant::now();
-        controller.refresh(now);
-        LoadMetric(controller.load(now))
+        let (metric, changed) = {
+            let mut controller = self
+                .shared
+                .controller
+                .lock()
+                .expect("controller mutex poisoned");
+            let before = controller.probe().current();
+            let now = Instant::now();
+            controller.refresh(now);
+            (LoadMetric(controller.load(now)), before != controller.probe().current())
+        };
+        if changed {
+            self.shared.dispatch.notify_waiters();
+        }
+        metric
     }
 }
 
@@ -376,11 +417,14 @@ where
 
     loop {
         let notified = shared.dispatch.notified();
-        let decision = {
+        let (decision, probe_until) = {
             let mut controller = shared.controller.lock().expect("controller mutex poisoned");
             let now = Instant::now();
             controller.refresh(now);
-            controller.dispatch_state(reservation, now)
+            (
+                controller.dispatch_state(reservation, now),
+                controller.probe().current().map(|probe| probe.until),
+            )
         };
 
         match decision {
@@ -388,7 +432,8 @@ where
                 break;
             }
             DispatchState::WaitUntil(deadline) => {
-                let delay = deadline.saturating_duration_since(Instant::now());
+                let wake_at = probe_until.map_or(deadline, |until| deadline.min(until));
+                let delay = wake_at.saturating_duration_since(Instant::now());
                 tokio::select! {
                     _ = tokio::time::sleep(delay) => {},
                     _ = notified => {},

@@ -382,8 +382,9 @@ impl EndpointController {
         rng: &mut R,
         now: Instant,
     ) -> Option<Probe> {
+        let previous = self.probe.current();
         let probe = schedule.maybe_start(&mut self.probe, rng, now);
-        if probe.is_some() {
+        if previous != self.probe.current() {
             self.update_rate(now);
         }
         probe
@@ -399,12 +400,7 @@ impl EndpointController {
     /// conditions remain stable.
     pub fn predicted_completion(&self, now: Instant) -> Instant {
         let dispatch = self.next_virtual_slot(now);
-        let expected_rtt = if self.queued == 0 && self.inflight == 0 {
-            self.latency.baseline()
-        } else {
-            self.latency.expected_rtt()
-        };
-        saturating_add(dispatch, expected_rtt)
+        saturating_add(dispatch, self.latency.expected_rtt())
     }
 
     /// Returns a scalar suitable for comparing endpoints. Lower is better.
