@@ -1,0 +1,20 @@
+[package]
+name = "loadpace-rama"
+version = "0.1.0-rc.2"
+edition = "2024"
+rust-version = "1.85"
+description = "Rama adapter for the loadpace adaptive controller"
+license = "MIT OR Apache-2.0"
+readme = "README.md"
+repository = "https://github.com/conradludgate/loadpace"
+keywords = ["load-balancing", "backpressure", "rama", "congestion-control"]
+categories = ["network-programming", "asynchronous"]
+
+[dependencies]
+loadpace = { version = "0.1.0-rc.2", path = "../loadpace" }
+rama = { version = "0.4.0", default-features = false, features = ["std"] }
+rand = "0.10"
+tokio = { version = "1", features = ["sync", "time"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time", "test-util"] }
