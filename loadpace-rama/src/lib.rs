@@ -13,8 +13,8 @@ use loadpace::{
     InFlightRequest, Outcome, Probe, ProbeSchedule, ScheduleError,
 };
 use rama::{Layer, Service};
-use rand::rngs::StdRng;
 use rand::Rng;
+use rand::rngs::StdRng;
 use std::error::Error;
 use std::fmt;
 use std::future::Future;

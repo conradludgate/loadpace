@@ -94,9 +94,9 @@ impl LatencyEstimator {
             .iter()
             .copied()
             .fold(f64::INFINITY, f64::min);
-        self.baseline = baseline.is_finite().then_some(
-            baseline.max(self.config.min_rtt.as_secs_f64()),
-        );
+        self.baseline = baseline
+            .is_finite()
+            .then_some(baseline.max(self.config.min_rtt.as_secs_f64()));
         self.samples += 1;
     }
 

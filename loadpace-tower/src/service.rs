@@ -3,8 +3,8 @@ use loadpace::{
     DispatchReservation, DispatchState, EndpointConfig, EndpointController, InFlightRequest,
     Outcome,
 };
-use rand::rngs::StdRng;
 use rand::Rng;
+use rand::rngs::StdRng;
 use std::future::Future;
 use std::marker::PhantomData;
 use std::pin::Pin;
