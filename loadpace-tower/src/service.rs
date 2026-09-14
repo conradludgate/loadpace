@@ -12,6 +12,7 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::task::{Context, Poll};
 use std::time::Instant;
+use tokio_util::sync::PollSemaphore;
 use tower::Service;
 use tower::discover::Change;
 use tower::load::Load;
@@ -32,22 +33,8 @@ impl LoadMetric {
 struct Shared<S> {
     inner: tokio::sync::Mutex<S>,
     controller: Mutex<EndpointController>,
-    ready: Arc<tokio::sync::Semaphore>,
     dispatch: tokio::sync::Notify,
     probe_rng: Mutex<StdRng>,
-}
-
-type ReadinessFuture = Pin<
-    Box<
-        dyn Future<Output = Result<tokio::sync::OwnedSemaphorePermit, tokio::sync::AcquireError>>
-            + Send
-            + 'static,
-    >,
->;
-
-enum ReadinessState {
-    Idle,
-    Waiting(ReadinessFuture),
 }
 
 // Core deliberately uses `std::time::Instant`; Tower waits use Tokio's
@@ -73,7 +60,7 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 pub struct AdaptiveEndpoint<S> {
     shared: Arc<Shared<S>>,
     readiness_permit: Option<tokio::sync::OwnedSemaphorePermit>,
-    readiness: Mutex<ReadinessState>,
+    readiness: PollSemaphore,
 }
 
 impl<S> AdaptiveEndpoint<S> {
@@ -83,16 +70,16 @@ impl<S> AdaptiveEndpoint<S> {
 
     pub fn new_at(inner: S, config: EndpointConfig, now: Instant) -> Self {
         let queue_capacity = config.queue_capacity;
+        let readiness = PollSemaphore::new(Arc::new(tokio::sync::Semaphore::new(queue_capacity)));
         Self {
             shared: Arc::new(Shared {
                 inner: tokio::sync::Mutex::new(inner),
                 controller: Mutex::new(EndpointController::new(config, now)),
-                ready: Arc::new(tokio::sync::Semaphore::new(queue_capacity)),
                 dispatch: tokio::sync::Notify::new(),
                 probe_rng: Mutex::new(rand::make_rng()),
             }),
             readiness_permit: None,
-            readiness: Mutex::new(ReadinessState::Idle),
+            readiness,
         }
     }
 
@@ -207,7 +194,7 @@ impl<S> Clone for AdaptiveEndpoint<S> {
         Self {
             shared: Arc::clone(&self.shared),
             readiness_permit: None,
-            readiness: Mutex::new(ReadinessState::Idle),
+            readiness: self.readiness.clone(),
         }
     }
 }
@@ -237,45 +224,15 @@ where
             return Poll::Ready(Ok(()));
         }
 
-        let mut readiness = lock(&self.readiness);
-        let poll = match std::mem::replace(&mut *readiness, ReadinessState::Idle) {
-            ReadinessState::Idle => match Arc::clone(&self.shared.ready).try_acquire_owned() {
-                Ok(permit) => {
-                    self.readiness_permit = Some(permit);
-                    return Poll::Ready(Ok(()));
-                }
-                Err(tokio::sync::TryAcquireError::NoPermits) => {
-                    let mut future = Box::pin(Arc::clone(&self.shared.ready).acquire_owned());
-                    let poll = future.as_mut().poll(cx);
-                    if poll.is_pending() {
-                        *readiness = ReadinessState::Waiting(future);
-                    }
-                    poll
-                }
-                Err(tokio::sync::TryAcquireError::Closed) => {
-                    // `ready` is private to `Shared` and is never closed by this
-                    // adapter. There is no meaningful S::Error to return for
-                    // this internal-only failure.
-                    unreachable!("the endpoint readiness semaphore cannot be closed")
-                }
-            },
-            ReadinessState::Waiting(mut future) => {
-                let poll = future.as_mut().poll(cx);
-                if poll.is_pending() {
-                    *readiness = ReadinessState::Waiting(future);
-                }
-                poll
-            }
-        };
-
-        match poll {
-            Poll::Ready(Ok(permit)) => {
+        match self.readiness.poll_acquire(cx) {
+            Poll::Ready(Some(permit)) => {
                 self.readiness_permit = Some(permit);
                 Poll::Ready(Ok(()))
             }
-            Poll::Ready(Err(_)) => {
-                // The future is created from the same private semaphore as
-                // above, which this adapter never closes.
+            Poll::Ready(None) => {
+                // The semaphore is private to this adapter and is never
+                // closed. There is no meaningful S::Error to return for this
+                // internal-only failure.
                 unreachable!("the endpoint readiness semaphore cannot be closed")
             }
             Poll::Pending => Poll::Pending,

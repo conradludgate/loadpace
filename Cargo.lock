@@ -547,6 +547,7 @@ dependencies = [
  "pin-project-lite",
  "rand",
  "tokio",
+ "tokio-util",
  "tower",
 ]
 
@@ -1311,6 +1312,7 @@ dependencies = [
  "bytes",
  "futures-core",
  "futures-sink",
+ "futures-util",
  "libc",
  "pin-project-lite",
  "tokio",
