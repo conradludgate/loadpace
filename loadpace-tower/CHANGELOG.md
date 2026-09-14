@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0-rc.3](https://github.com/conradludgate/loadpace/compare/loadpace-tower-v0.1.0-rc.2...loadpace-tower-v0.1.0-rc.3) - 2026-09-14
+
+### Added
+
+- *(adapters)* drive probes on queued demand
+
+### Fixed
+
+- *(adapters)* use rand 0.10 make_rng
+- *(latency)* age the minimum RTT baseline
+- *(adapters)* arm dispatch notifications before checks
+
+### Other
+
+- *(api)* explain crate responsibilities
+- *(readme)* explain Loadpace purpose
+- *(tower)* advance paused clock for probes
+- format workspace
+- *(layout)* move core crate into workspace member
+
 ## [0.1.0-rc.2](https://github.com/conradludgate/loadpace/compare/loadpace-tower-v0.1.0-rc.1...loadpace-tower-v0.1.0-rc.2) - 2026-09-14
 
 ### Added
