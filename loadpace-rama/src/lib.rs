@@ -316,6 +316,90 @@ impl<S> Drop for RequestGuard<S> {
     }
 }
 
+struct DispatchPlan {
+    state: DispatchState,
+    next_wakeup: Option<Instant>,
+}
+
+impl DispatchPlan {
+    fn wake_at(&self, deadline: Instant) -> Instant {
+        self.next_wakeup
+            .map_or(deadline, |candidate| deadline.min(candidate))
+    }
+}
+
+fn dispatch_plan<S>(
+    shared: &Shared<S>,
+    reservation: DispatchReservation,
+    current: Instant,
+) -> DispatchPlan {
+    let (plan, probe_changed) = {
+        let mut controller = lock(&shared.controller);
+        let previous_probe = controller.probe().current();
+        controller.refresh(current);
+
+        let demand_requires_probing = controller.inflight() > 0 && controller.queued() > 0;
+        if demand_requires_probing {
+            let schedule = controller.config().probe_schedule.clone();
+            let mut rng = lock(&shared.probe_rng);
+            controller.maybe_start_probe(&schedule, &mut *rng, current);
+        }
+
+        let active_probe = controller.probe().current();
+        let next_wakeup = match active_probe {
+            Some(probe) => Some(probe.until),
+            None if demand_requires_probing => controller.probe().next_probe_at(),
+            None => None,
+        };
+        let plan = DispatchPlan {
+            state: controller.dispatch_state(reservation, current),
+            next_wakeup,
+        };
+        (plan, previous_probe != active_probe)
+    };
+
+    // Wake waiters after releasing the controller lock so they observe the
+    // complete state transition when they re-check their reservations.
+    if probe_changed {
+        shared.dispatch.notify_waiters();
+    }
+    plan
+}
+
+async fn wait_for_dispatch<S>(shared: &Shared<S>, reservation: DispatchReservation) {
+    loop {
+        let notified = shared.dispatch.notified();
+        let mut notified = std::pin::pin!(notified);
+        // Register before inspecting controller state. Otherwise a
+        // notification between the state check and the first poll could be
+        // lost, leaving this request asleep indefinitely.
+        notified.as_mut().enable();
+
+        let plan = dispatch_plan(shared, reservation, now());
+        match plan.state {
+            DispatchState::Ready => return,
+            DispatchState::WaitUntil(deadline) => {
+                let wake_at = plan.wake_at(deadline);
+                let delay = wake_at.saturating_duration_since(now());
+                let _ = tokio::time::timeout(delay, notified.as_mut()).await;
+            }
+            DispatchState::WaitForPrevious | DispatchState::InflightLimit => {
+                notified.as_mut().await;
+            }
+            DispatchState::Cancelled => {
+                unreachable!("a live request reservation cannot be cancelled externally");
+            }
+        }
+    }
+}
+
+fn commit_dispatch<S>(shared: &Shared<S>, reservation: DispatchReservation) -> InFlightRequest {
+    match lock(&shared.controller).on_dispatched(reservation, now()) {
+        Some(active) => active,
+        None => unreachable!("a ready dispatch reservation must be dispatchable"),
+    }
+}
+
 async fn dispatch_request<S, Request>(
     shared: Arc<Shared<S>>,
     request: Request,
@@ -328,63 +412,9 @@ where
     S::Error: Send + 'static,
     Request: Send + 'static,
 {
-    loop {
-        let notified = shared.dispatch.notified();
-        let mut notified = std::pin::pin!(notified);
-        // Register before inspecting controller state. Otherwise a
-        // notification between the state check and the first poll could be
-        // lost, leaving this request asleep indefinitely.
-        notified.as_mut().enable();
-        let (decision, probe_until, next_probe_at, probe_changed) = {
-            let mut controller = lock(&shared.controller);
-            let current = now();
-            let before = controller.probe().current();
-            controller.refresh(current);
-            let needs_probe = controller.inflight() > 0 && controller.queued() > 0;
-            if needs_probe {
-                let schedule = controller.config().probe_schedule.clone();
-                let mut rng = lock(&shared.probe_rng);
-                controller.maybe_start_probe(&schedule, &mut *rng, current);
-            }
-            let active_probe = controller.probe().current();
-            let next_probe_at = match (needs_probe, active_probe) {
-                (true, None) => controller.probe().next_probe_at(),
-                _ => None,
-            };
-            (
-                controller.dispatch_state(reservation, current),
-                active_probe.map(|probe| probe.until),
-                next_probe_at,
-                before != active_probe,
-            )
-        };
-        if probe_changed {
-            shared.dispatch.notify_waiters();
-        }
+    wait_for_dispatch(&shared, reservation).await;
 
-        match decision {
-            DispatchState::Ready => break,
-            DispatchState::WaitUntil(deadline) => {
-                let wake_at = probe_until
-                    .into_iter()
-                    .chain(next_probe_at)
-                    .fold(deadline, |earliest, candidate| earliest.min(candidate));
-                let delay = wake_at.saturating_duration_since(now());
-                let _ = tokio::time::timeout(delay, notified.as_mut()).await;
-            }
-            DispatchState::WaitForPrevious | DispatchState::InflightLimit => {
-                notified.as_mut().await;
-            }
-            DispatchState::Cancelled => {
-                unreachable!("a live request reservation cannot be cancelled externally");
-            }
-        }
-    }
-
-    let current = now();
-    let Some(active) = lock(&shared.controller).on_dispatched(reservation, current) else {
-        unreachable!("a ready dispatch reservation must be dispatchable");
-    };
+    let active = commit_dispatch(&shared, reservation);
     guard.mark_dispatched(active);
     // Removing the FIFO head can make the next reservation eligible. Wake it
     // even when its old timer has not elapsed because the committed TAT may
