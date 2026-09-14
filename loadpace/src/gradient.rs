@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// Parameters for the fractional Gradient2 controller.
 #[derive(Clone, Debug)]
@@ -15,6 +15,8 @@ pub struct Gradient2Config {
     pub gain: f64,
     /// Smoothing applied to each new operating-point estimate.
     pub smoothing: f64,
+    /// Minimum time between healthy operating-point updates.
+    pub update_interval: Duration,
     /// Multiplier used after a classified failure.
     pub failure_factor: f64,
 }
@@ -28,6 +30,7 @@ impl Default for Gradient2Config {
             tolerance: 1.5,
             gain: 0.1,
             smoothing: 0.2,
+            update_interval: Duration::from_millis(100),
             failure_factor: 0.7,
         }
     }
@@ -44,6 +47,7 @@ pub struct Gradient2 {
     concurrency: f64,
     last_gradient: f64,
     updates: u64,
+    next_update_at: Option<Instant>,
 }
 
 impl Gradient2 {
@@ -74,6 +78,10 @@ impl Gradient2 {
             "Gradient2 smoothing must be finite and in (0, 1]"
         );
         assert!(
+            !config.update_interval.is_zero(),
+            "Gradient2 update interval must be positive"
+        );
+        assert!(
             (0.0..=1.0).contains(&config.failure_factor) && config.failure_factor > 0.0,
             "failure factor must be in (0, 1]"
         );
@@ -83,6 +91,7 @@ impl Gradient2 {
             config,
             last_gradient: 1.0,
             updates: 0,
+            next_update_at: None,
         }
     }
 
@@ -92,7 +101,23 @@ impl Gradient2 {
     /// diagnostics, but it must not increase the operating point: low demand
     /// is not evidence that the endpoint has spare capacity.
     pub fn on_rtt(&mut self, current_rtt: Duration, long_rtt: Duration, inflight: usize) -> bool {
-        self.on_rtt_with_pacing(current_rtt, long_rtt, inflight, true)
+        self.on_rtt_at(current_rtt, long_rtt, inflight, true, Instant::now())
+    }
+
+    /// Updates the operating point at an explicit time.
+    ///
+    /// This is the deterministic form of [`Self::on_rtt`]. Healthy operating
+    /// point changes are limited by [`Gradient2Config::update_interval`], so
+    /// a high response rate cannot make the controller adapt proportionally
+    /// faster than a low response rate.
+    pub fn on_rtt_at(
+        &mut self,
+        current_rtt: Duration,
+        long_rtt: Duration,
+        inflight: usize,
+        now: Instant,
+    ) -> bool {
+        self.on_rtt_with_pacing_at(current_rtt, long_rtt, inflight, true, now)
     }
 
     /// Updates the operating point with an explicit pacing signal.
@@ -107,7 +132,19 @@ impl Gradient2 {
         inflight: usize,
         was_paced: bool,
     ) -> bool {
-        self.on_rtt_with_reference(current_rtt, long_rtt, inflight, was_paced)
+        self.on_rtt_with_pacing_at(current_rtt, long_rtt, inflight, was_paced, Instant::now())
+    }
+
+    /// Updates the operating point with an explicit pacing signal and time.
+    pub fn on_rtt_with_pacing_at(
+        &mut self,
+        current_rtt: Duration,
+        long_rtt: Duration,
+        inflight: usize,
+        was_paced: bool,
+        now: Instant,
+    ) -> bool {
+        self.on_rtt_with_reference_at(current_rtt, long_rtt, inflight, was_paced, now)
     }
 
     /// Updates the operating point using a minimum-RTT reference.
@@ -123,15 +160,35 @@ impl Gradient2 {
         inflight: usize,
         was_paced: bool,
     ) -> bool {
-        self.on_rtt_with_reference(current_rtt, baseline_rtt, inflight, was_paced)
+        self.on_rtt_with_baseline_at(
+            current_rtt,
+            baseline_rtt,
+            inflight,
+            was_paced,
+            Instant::now(),
+        )
     }
 
-    fn on_rtt_with_reference(
+    /// Updates the operating point against a minimum-RTT reference at an
+    /// explicit time.
+    pub fn on_rtt_with_baseline_at(
+        &mut self,
+        current_rtt: Duration,
+        baseline_rtt: Duration,
+        inflight: usize,
+        was_paced: bool,
+        now: Instant,
+    ) -> bool {
+        self.on_rtt_with_reference_at(current_rtt, baseline_rtt, inflight, was_paced, now)
+    }
+
+    fn on_rtt_with_reference_at(
         &mut self,
         current_rtt: Duration,
         reference_rtt: Duration,
         inflight: usize,
         was_paced: bool,
+        now: Instant,
     ) -> bool {
         let current_rtt = current_rtt.as_secs_f64().max(f64::MIN_POSITIVE);
         let reference_rtt = reference_rtt.as_secs_f64().max(f64::MIN_POSITIVE);
@@ -144,21 +201,41 @@ impl Gradient2 {
         // than once, while a healthy sample can recover toward the current
         // operating point.
         let gradient = (self.config.tolerance * reference_rtt / current_rtt).clamp(0.5, 1.0);
+        self.last_gradient = gradient;
+        if self
+            .next_update_at
+            .is_some_and(|next_update_at| now < next_update_at)
+        {
+            return false;
+        }
+
         let estimate = self.concurrency * gradient + self.config.gain;
         self.concurrency = (self.concurrency * (1.0 - self.config.smoothing)
             + estimate * self.config.smoothing)
             .clamp(self.config.min_concurrency, self.config.max_concurrency);
-        self.last_gradient = gradient;
         self.updates += 1;
+        self.next_update_at = Some(
+            now.checked_add(self.config.update_interval)
+                .expect("Gradient2 update schedule overflowed Instant"),
+        );
         true
     }
 
     /// Reduces the operating point after an outcome classified as unhealthy.
     pub fn on_failure(&mut self) {
+        self.on_failure_at(Instant::now());
+    }
+
+    /// Reduces the operating point at an explicit time.
+    pub fn on_failure_at(&mut self, now: Instant) {
         self.concurrency = (self.concurrency * self.config.failure_factor)
             .clamp(self.config.min_concurrency, self.config.max_concurrency);
         self.last_gradient = 0.0;
         self.updates += 1;
+        self.next_update_at = Some(
+            now.checked_add(self.config.update_interval)
+                .expect("Gradient2 update schedule overflowed Instant"),
+        );
     }
 
     pub fn concurrency(&self) -> f64 {

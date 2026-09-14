@@ -110,17 +110,96 @@ fn gradient2_preserves_fractional_concurrency_and_reacts_to_congestion() {
         tolerance: 1.0,
         gain: 0.1,
         smoothing: 1.0,
+        update_interval: Duration::from_secs(1),
         failure_factor: 0.5,
     });
 
     assert_eq!(gradient.concurrency(), 1.3);
-    assert!(gradient.on_rtt(Duration::from_millis(10), Duration::from_millis(10), 1,));
+    let now = at_zero();
+    assert!(gradient.on_rtt_at(
+        Duration::from_millis(10),
+        Duration::from_millis(10),
+        1,
+        now,
+    ));
     assert!((gradient.concurrency() - 1.4).abs() < 1e-9);
 
-    assert!(gradient.on_rtt(Duration::from_millis(30), Duration::from_millis(10), 1,));
+    assert!(gradient.on_rtt_at(
+        Duration::from_millis(30),
+        Duration::from_millis(10),
+        1,
+        now + Duration::from_secs(1),
+    ));
     assert!(gradient.concurrency() < 1.4);
-    gradient.on_failure();
+    gradient.on_failure_at(now + Duration::from_secs(2));
     assert!(gradient.concurrency() >= 0.25);
+}
+
+#[test]
+fn gradient2_limits_healthy_updates_to_the_configured_interval() {
+    let now = at_zero();
+    let mut gradient = Gradient2::new(Gradient2Config {
+        gain: 0.1,
+        smoothing: 1.0,
+        update_interval: Duration::from_secs(1),
+        ..Gradient2Config::default()
+    });
+
+    assert!(gradient.on_rtt_at(
+        Duration::from_millis(10),
+        Duration::from_millis(10),
+        1,
+        now,
+    ));
+    assert!(!gradient.on_rtt_at(
+        Duration::from_millis(10),
+        Duration::from_millis(10),
+        1,
+        now + Duration::from_millis(999),
+    ));
+    assert_eq!(gradient.updates(), 1);
+    assert_eq!(gradient.concurrency(), 1.1);
+
+    assert!(gradient.on_rtt_at(
+        Duration::from_millis(10),
+        Duration::from_millis(10),
+        1,
+        now + Duration::from_secs(1),
+    ));
+    assert_eq!(gradient.updates(), 2);
+    assert_eq!(gradient.concurrency(), 1.2);
+}
+
+#[test]
+fn gradient2_update_count_is_stable_across_sample_rates() {
+    fn run(samples: usize, interval: Duration) -> (f64, u64) {
+        let now = at_zero();
+        let mut gradient = Gradient2::new(Gradient2Config {
+            gain: 0.1,
+            smoothing: 1.0,
+            update_interval: Duration::from_secs(1),
+            ..Gradient2Config::default()
+        });
+
+        let mut updates = 0;
+        for sample in 0..samples {
+            updates += gradient
+                .on_rtt_at(
+                    Duration::from_millis(10),
+                    Duration::from_millis(10),
+                    1,
+                    now + interval.saturating_mul(sample as u32),
+                ) as u64;
+        }
+
+        assert_eq!(updates, 3);
+        (gradient.concurrency(), gradient.updates())
+    }
+
+    assert_eq!(
+        run(21, Duration::from_millis(100)),
+        run(3, Duration::from_secs(1))
+    );
 }
 
 #[test]
@@ -128,11 +207,12 @@ fn gradient2_does_not_grow_when_application_limited() {
     let mut gradient = Gradient2::new(Gradient2Config::default());
     let initial = gradient.concurrency();
 
-    assert!(!gradient.on_rtt_with_pacing(
+    assert!(!gradient.on_rtt_with_pacing_at(
         Duration::from_millis(10),
         Duration::from_millis(10),
         1,
         false,
+        at_zero(),
     ));
     assert_eq!(gradient.concurrency(), initial);
     assert_eq!(gradient.updates(), 0);

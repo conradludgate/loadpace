@@ -61,6 +61,10 @@ estimate.
 reduces the operating point without treating a fast failure as a healthy RTT
 sample.
 
+Healthy Gradient2 updates are time-gated by `Gradient2Config::update_interval`.
+RTT samples continue to update the latency estimator, but a higher response
+rate cannot cause proportionally faster operating-point growth.
+
 ## `ControllerSnapshot`
 
 The snapshot includes RTT estimates, target/effective concurrency, derived

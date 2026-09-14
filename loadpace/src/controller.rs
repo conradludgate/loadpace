@@ -336,16 +336,17 @@ impl EndpointController {
                 // minimum RTT. A per-client long EWMA can absorb shared
                 // queueing and let an incumbent retain an unfair share when
                 // a new client joins.
-                self.gradient.on_rtt_with_baseline(
+                self.gradient.on_rtt_with_baseline_at(
                     self.latency.short(),
                     self.latency.baseline(),
                     self.inflight,
                     request.was_paced(),
+                    now,
                 );
             }
             Outcome::Failure => {
                 self.failures += 1;
-                self.gradient.on_failure();
+                self.gradient.on_failure_at(now);
             }
         }
 
@@ -359,7 +360,7 @@ impl EndpointController {
     /// but the endpoint is still penalized for future scheduling.
     pub fn on_admission_failure(&mut self, now: Instant) {
         self.failures += 1;
-        self.gradient.on_failure();
+        self.gradient.on_failure_at(now);
         self.update_rate(now);
     }
 
