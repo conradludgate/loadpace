@@ -252,6 +252,7 @@ async fn positive_probe_wakes_a_queued_dispatch() {
     let started = Arc::new(Notify::new());
     let release = Arc::new(Notify::new());
     let starts = Arc::new(AtomicUsize::new(0));
+    let now = tokio::time::Instant::now().into_std();
     let endpoint = AdaptiveEndpoint::new_at(
         Held {
             started: Arc::clone(&started),
@@ -259,7 +260,7 @@ async fn positive_probe_wakes_a_queued_dispatch() {
             starts: Arc::clone(&starts),
         },
         config(2, Duration::from_secs(1)),
-        Instant::now(),
+        now,
     );
 
     let first = tokio::spawn(endpoint.clone().oneshot(1));
@@ -270,7 +271,10 @@ async fn positive_probe_wakes_a_queued_dispatch() {
     while endpoint.snapshot().queued != 1 {
         tokio::task::yield_now().await;
     }
-    endpoint.start_positive_probe(1.0, Instant::now() + Duration::from_secs(1));
+    endpoint.start_positive_probe(
+        1.0,
+        tokio::time::Instant::now().into_std() + Duration::from_secs(1),
+    );
     tokio::task::yield_now().await;
 
     tokio::time::advance(Duration::from_millis(400)).await;
@@ -292,6 +296,7 @@ async fn probe_expiry_wakes_a_dispatch_to_recompute_the_slower_rate() {
     let started = Arc::new(Notify::new());
     let release = Arc::new(Notify::new());
     let starts = Arc::new(AtomicUsize::new(0));
+    let now = tokio::time::Instant::now().into_std();
     let endpoint = AdaptiveEndpoint::new_at(
         Held {
             started: Arc::clone(&started),
@@ -299,7 +304,7 @@ async fn probe_expiry_wakes_a_dispatch_to_recompute_the_slower_rate() {
             starts: Arc::clone(&starts),
         },
         config(2, Duration::from_secs(1)),
-        Instant::now(),
+        now,
     );
 
     let first = tokio::spawn(endpoint.clone().oneshot(1));
@@ -310,7 +315,10 @@ async fn probe_expiry_wakes_a_dispatch_to_recompute_the_slower_rate() {
     while endpoint.snapshot().queued != 1 {
         tokio::task::yield_now().await;
     }
-    endpoint.start_negative_probe(0.5, Instant::now() + Duration::from_millis(200));
+    endpoint.start_negative_probe(
+        0.5,
+        tokio::time::Instant::now().into_std() + Duration::from_millis(200),
+    );
     tokio::task::yield_now().await;
 
     tokio::time::advance(Duration::from_millis(200)).await;

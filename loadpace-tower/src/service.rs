@@ -42,6 +42,13 @@ type ReadinessFuture = Pin<
     >,
 >;
 
+// Core deliberately uses `std::time::Instant`; Tower waits use Tokio's
+// runtime clock. Converting here keeps controller deadlines and Tokio timers
+// in the same clock domain, including when Tokio time is paused in tests.
+fn now() -> Instant {
+    tokio::time::Instant::now().into_std()
+}
+
 /// A Tower service with per-endpoint adaptive pacing and bounded admission.
 ///
 /// `poll_ready` reports whether another request can enter the endpoint's
@@ -57,7 +64,7 @@ pub struct AdaptiveEndpoint<S> {
 
 impl<S> AdaptiveEndpoint<S> {
     pub fn new(inner: S, config: EndpointConfig) -> Self {
-        Self::new_at(inner, config, Instant::now())
+        Self::new_at(inner, config, now())
     }
 
     pub fn new_at(inner: S, config: EndpointConfig, now: Instant) -> Self {
@@ -92,18 +99,18 @@ impl<S> AdaptiveEndpoint<S> {
     }
 
     pub fn snapshot(&self) -> loadpace::ControllerSnapshot {
-        self.with_controller(|controller| controller.snapshot(Instant::now()))
+        self.with_controller(|controller| controller.snapshot(now()))
     }
 
     pub fn start_positive_probe(&self, delta: f64, until: Instant) {
         self.with_controller(|controller| {
-            controller.start_positive_probe(delta, until, Instant::now());
+            controller.start_positive_probe(delta, until, now());
         });
     }
 
     pub fn start_negative_probe(&self, factor: f64, until: Instant) {
         self.with_controller(|controller| {
-            controller.start_negative_probe(factor, until, Instant::now());
+            controller.start_negative_probe(factor, until, now());
         });
     }
 
@@ -117,15 +124,15 @@ impl<S> AdaptiveEndpoint<S> {
         rng: &mut R,
     ) -> Option<loadpace::Probe> {
         self.with_controller(|controller| {
-            controller.maybe_start_probe(schedule, rng, Instant::now())
+            controller.maybe_start_probe(schedule, rng, now())
         })
     }
 
     pub fn load_metric(&self) -> LoadMetric {
         self.with_controller(|controller| {
-            let now = Instant::now();
-            controller.refresh(now);
-            LoadMetric(controller.load(now))
+            let current = now();
+            controller.refresh(current);
+            LoadMetric(controller.load(current))
         })
     }
 }
@@ -270,7 +277,7 @@ where
             .controller
             .lock()
             .expect("controller mutex poisoned")
-            .reserve(Instant::now())
+            .reserve(now())
             .expect("readiness reservation was not reflected in controller capacity");
 
         let guard = RequestGuard::new(Arc::clone(&self.shared), reservation, readiness_permit);
@@ -354,7 +361,7 @@ impl<S> RequestGuard<S> {
 impl<S> Drop for RequestGuard<S> {
     fn drop(&mut self) {
         if !self.finished {
-            self.finish(Outcome::Failure, Instant::now());
+            self.finish(Outcome::Failure, now());
         }
     }
 }
@@ -379,10 +386,10 @@ where
         let notified = shared.dispatch.notified();
         let (decision, probe_until) = {
             let mut controller = shared.controller.lock().expect("controller mutex poisoned");
-            let now = Instant::now();
-            controller.refresh(now);
+            let current = now();
+            controller.refresh(current);
             (
-                controller.dispatch_state(reservation, now),
+                controller.dispatch_state(reservation, current),
                 controller.probe().current().map(|probe| probe.until),
             )
         };
@@ -393,7 +400,7 @@ where
             }
             DispatchState::WaitUntil(deadline) => {
                 let wake_at = probe_until.map_or(deadline, |until| deadline.min(until));
-                let delay = wake_at.saturating_duration_since(Instant::now());
+                let delay = wake_at.saturating_duration_since(now());
                 tokio::select! {
                     _ = tokio::time::sleep(delay) => {},
                     _ = notified => {},
@@ -412,7 +419,7 @@ where
         let mut inner = shared.inner.lock().await;
         match std::future::poll_fn(|cx| inner.poll_ready(cx)).await {
             Ok(()) => {
-                let now = Instant::now();
+                let now = now();
                 let active = shared
                     .controller
                     .lock()
@@ -429,7 +436,7 @@ where
                     .controller
                     .lock()
                     .expect("controller mutex poisoned")
-                    .on_admission_failure(Instant::now());
+                    .on_admission_failure(now());
                 Err(error)
             }
         }
@@ -440,7 +447,7 @@ where
     } else {
         Outcome::Failure
     };
-    let now = Instant::now();
+    let now = now();
     guard.finish(outcome, now);
     result
 }
