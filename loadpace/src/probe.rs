@@ -150,6 +150,11 @@ impl ProbeSchedule {
     }
 
     /// Starts at most one probe when the endpoint is not already probing.
+    ///
+    /// # Panics
+    ///
+    /// Panics when this schedule contains invalid probabilities, perturbation
+    /// parameters, or timing values. See [`Self::validate`].
     pub fn maybe_start<R: Rng + ?Sized>(
         &self,
         state: &mut ProbeState,
