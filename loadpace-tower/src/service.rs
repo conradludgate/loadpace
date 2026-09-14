@@ -123,9 +123,7 @@ impl<S> AdaptiveEndpoint<S> {
         schedule: &loadpace::ProbeSchedule,
         rng: &mut R,
     ) -> Option<loadpace::Probe> {
-        self.with_controller(|controller| {
-            controller.maybe_start_probe(schedule, rng, now())
-        })
+        self.with_controller(|controller| controller.maybe_start_probe(schedule, rng, now()))
     }
 
     pub fn load_metric(&self) -> LoadMetric {
