@@ -29,6 +29,10 @@ starts immediately before `S::call`, so local queue and readiness delay do not
 enter the RTT sample. Dropping the future cancels a queued reservation or
 records a dispatched request as failed.
 
+`AdaptiveLayer` wraps a service in an endpoint and can be used directly in a
+`tower::ServiceBuilder` stack. The inner service needs to be `Send`, but does
+not need to be `Sync`.
+
 `snapshot` returns controller metrics. Probes are controller-owned and are
 automatically considered as the adapter refreshes endpoint state during normal
 dispatch and load selection. Application code does not need a timer or a probe
@@ -47,7 +51,7 @@ The prediction includes the endpoint's virtual GCRA queue tail and expected
 RTT, allowing endpoints with different learned rates and latencies to be
 compared without a global sort.
 
-## `AdaptiveDiscovery<D, Request>`
+## `AdaptiveDiscovery<D>`
 
 The wrapper maps discovery insertions:
 
@@ -57,4 +61,6 @@ Change::Insert(key, service)
 ```
 
 Removal events pass through. Controller state is fresh after re-insertion of a
-key; state retention across discovery churn is not currently implemented.
+key; state retention across discovery churn is not currently implemented. The
+stream mapping itself does not constrain the inserted service or request type;
+those bounds apply only when the wrapped endpoint is used as a service.

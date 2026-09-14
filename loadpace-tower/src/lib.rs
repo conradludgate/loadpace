@@ -12,4 +12,4 @@
 
 mod service;
 
-pub use service::{AdaptiveDiscovery, AdaptiveEndpoint, LoadMetric, ResponseFuture};
+pub use service::{AdaptiveDiscovery, AdaptiveEndpoint, AdaptiveLayer, LoadMetric, ResponseFuture};

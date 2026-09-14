@@ -1,13 +1,14 @@
 use loadpace::{EndpointConfig, LatencyEstimatorConfig, ProbeSchedule};
-use loadpace_tower::AdaptiveEndpoint;
+use loadpace_tower::{AdaptiveEndpoint, AdaptiveLayer};
+use std::cell::Cell;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 use tokio::sync::Notify;
-use tower::{Service, ServiceExt};
+use tower::{Layer, Service, ServiceExt};
 
 type BoxResult<T> = Pin<Box<dyn Future<Output = Result<T, &'static str>> + Send>>;
 
@@ -41,6 +42,70 @@ impl Service<u64> for Failing {
 
     fn call(&mut self, _request: u64) -> Self::Future {
         Box::pin(async { Err("overloaded") })
+    }
+}
+
+struct LocalEcho {
+    calls: Cell<usize>,
+}
+
+impl Service<u64> for LocalEcho {
+    type Response = u64;
+    type Error = &'static str;
+    type Future = BoxResult<u64>;
+
+    fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        Poll::Ready(Ok(()))
+    }
+
+    fn call(&mut self, request: u64) -> Self::Future {
+        self.calls.set(self.calls.get() + 1);
+        Box::pin(async move { Ok(request) })
+    }
+}
+
+struct ReadyGate {
+    open: AtomicBool,
+    waker: futures_util::task::AtomicWaker,
+}
+
+impl ReadyGate {
+    fn new() -> Self {
+        Self {
+            open: AtomicBool::new(false),
+            waker: futures_util::task::AtomicWaker::new(),
+        }
+    }
+
+    fn open(&self) {
+        self.open.store(true, Ordering::Release);
+        self.waker.wake();
+    }
+}
+
+struct ReadinessGated {
+    gate: Arc<ReadyGate>,
+}
+
+impl Service<u64> for ReadinessGated {
+    type Response = u64;
+    type Error = &'static str;
+    type Future = BoxResult<u64>;
+
+    fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        if self.gate.open.load(Ordering::Acquire) {
+            return Poll::Ready(Ok(()));
+        }
+        self.gate.waker.register(cx.waker());
+        if self.gate.open.load(Ordering::Acquire) {
+            Poll::Ready(Ok(()))
+        } else {
+            Poll::Pending
+        }
+    }
+
+    fn call(&mut self, request: u64) -> Self::Future {
+        Box::pin(async move { Ok(request) })
     }
 }
 
@@ -90,6 +155,17 @@ fn config(queue_capacity: usize, initial_rtt: Duration) -> EndpointConfig {
         },
         ..EndpointConfig::default()
     }
+}
+
+#[tokio::test(start_paused = true)]
+async fn layer_wraps_services_that_are_send_but_not_sync() {
+    let layer = AdaptiveLayer::new(config(2, Duration::from_millis(1)));
+    assert_eq!(layer.config().queue_capacity, 2);
+
+    let endpoint = layer.layer(LocalEcho {
+        calls: Cell::new(0),
+    });
+    assert_eq!(endpoint.oneshot(42).await.unwrap(), 42);
 }
 
 #[tokio::test(start_paused = true)]
@@ -415,4 +491,32 @@ async fn readiness_capacity_is_shared_across_clones() {
         ),
         Poll::Ready(Ok(()))
     ));
+}
+
+#[tokio::test(start_paused = true)]
+async fn cancelling_the_fifo_head_unblocks_the_next_request() {
+    let gate = Arc::new(ReadyGate::new());
+    let endpoint = AdaptiveEndpoint::new_at(
+        ReadinessGated {
+            gate: Arc::clone(&gate),
+        },
+        config(2, Duration::from_micros(1)),
+        Instant::now(),
+    );
+
+    let first = tokio::spawn(endpoint.clone().oneshot(1));
+    while endpoint.snapshot().queued != 1 {
+        tokio::task::yield_now().await;
+    }
+    let second = tokio::spawn(endpoint.clone().oneshot(2));
+    while endpoint.snapshot().queued != 2 {
+        tokio::task::yield_now().await;
+    }
+
+    first.abort();
+    assert!(first.await.unwrap_err().is_cancelled());
+    gate.open();
+
+    assert_eq!(second.await.unwrap().unwrap(), 2);
+    assert_eq!(endpoint.snapshot().queued, 0);
 }

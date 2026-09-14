@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Add `AdaptiveLayer` for normal Tower layer stacks.
+
+### Changed
+
+- Make dispatch wakeup timing controller-owned and simplify the Tower request
+  lifecycle around queued, in-flight, and finished states.
+- Remove the unnecessary request type parameter and service bounds from
+  `AdaptiveDiscovery`.
+
 ## [0.1.0-rc.3](https://github.com/conradludgate/loadpace/compare/loadpace-tower-v0.1.0-rc.2...loadpace-tower-v0.1.0-rc.3) - 2026-09-14
 
 ### Added

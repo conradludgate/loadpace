@@ -184,6 +184,7 @@ It combines:
 The separate `loadpace-tower` crate provides:
 
 - `AdaptiveEndpoint<S>: tower::Service<Request>`;
+- `AdaptiveLayer`, for composing an endpoint in a Tower layer stack;
 - a predicted completion-cost `tower::load::Load` metric;
 - `AdaptiveDiscovery`, which wraps inserted services with fresh controller state;
 - compatibility with Tower's `p2c::Balance`;

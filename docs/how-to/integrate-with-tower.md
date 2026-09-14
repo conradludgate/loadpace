@@ -31,16 +31,12 @@ use loadpace::EndpointConfig;
 use loadpace_tower::AdaptiveDiscovery;
 use tower::balance::p2c::Balance;
 
-let adaptive = AdaptiveDiscovery::<_, Request>::new(
-    discovery,
-    EndpointConfig::default(),
-);
+let adaptive = AdaptiveDiscovery::new(discovery, EndpointConfig::default());
 let client = Balance::new(adaptive);
 ```
 
-`Request` is the request type accepted by the discovered services. The
-discovered service and its future must satisfy the `Send + 'static` bounds
-required by `AdaptiveEndpoint`.
+The discovered service and its future must satisfy the `Send + 'static`
+bounds required when the resulting `AdaptiveEndpoint` is used as a service.
 
 ## Send requests through the balancer
 

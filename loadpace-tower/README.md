@@ -20,6 +20,7 @@ learns its own safe operating point.
 `loadpace-tower` provides:
 
 - `AdaptiveEndpoint<S>`, a bounded and paced `tower::Service` adapter;
+- `AdaptiveLayer`, for wrapping services in a `tower::ServiceBuilder` stack;
 - `AdaptiveDiscovery`, which wraps discovered services with fresh controller
   state; and
 - `LoadMetric`, a predicted completion-cost metric for Tower's P2C balancer.
