@@ -74,4 +74,6 @@ negative probabilities choose the probe kind at each scheduled decision; the
 remaining probability performs no probe. `min_interval` and `max_interval`
 bound the time until the next decision, so checking the schedule more often
 does not increase probe frequency. The default intervals are one to five
-seconds, and the default duration is one second.
+seconds, and the default duration is one second. With the default 10% positive
+and 5% negative probabilities, a probe opportunity occurs every twenty seconds
+on average when the caller drives the checks continuously.

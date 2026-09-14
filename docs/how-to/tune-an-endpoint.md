@@ -76,7 +76,9 @@ Treat probing as a temporary perturbation. It is useful for escaping unfair
 multi-client equilibria, but it should not be used as a permanent capacity
 assignment mechanism. Probe decisions are time-gated between the configured
 interval bounds, so calling the check more often does not increase the probe
-rate.
+rate. The default schedule attempts a positive or negative probe about every
+twenty seconds on average; use a custom schedule when a slower or faster
+fairness response is appropriate for the membership churn of your service.
 
 ## Watch these metrics
 

@@ -88,8 +88,12 @@ pub struct ProbeSchedule {
 impl Default for ProbeSchedule {
     fn default() -> Self {
         Self {
-            positive_probability: 0.02,
-            negative_probability: 0.01,
+            // A decision is made every one to five seconds, so these values
+            // give an expected probe opportunity about every twenty seconds.
+            // That is short enough to repair a stale allocation while still
+            // keeping probes rare relative to ordinary request traffic.
+            positive_probability: 0.10,
+            negative_probability: 0.05,
             positive_delta: 1.0,
             negative_factor: 0.8,
             duration: Duration::from_secs(1),
