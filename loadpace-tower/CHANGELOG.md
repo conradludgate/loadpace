@@ -7,6 +7,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0-rc.4](https://github.com/conradludgate/loadpace/compare/loadpace-tower-v0.1.0-rc.3...loadpace-tower-v0.1.0-rc.4) - 2026-09-14
+
+### Added
+
+- *(adapters)* drive probes on queued demand
+- *(probe)* schedule probes by time
+
+### Fixed
+
+- *(packaging)* pin prerelease core dependencies
+- *(adapters)* use rand 0.10 make_rng
+- *(latency)* age the minimum RTT baseline
+- *(adapters)* arm dispatch notifications before checks
+- *(tower)* enable tokio select macro
+- *(tower)* use runtime clock for dispatch deadlines
+- *(probe)* wake Tower dispatches on transitions
+- *(tower)* preserve endpoint thread safety
+- *(tower)* replace shared readiness waker
+
+### Other
+
+- release
+- *(api)* explain crate responsibilities
+- *(readme)* explain Loadpace purpose
+- *(tower)* advance paused clock for probes
+- format workspace
+- *(layout)* move core crate into workspace member
+- release v0.1.0-rc.2
+- *(tower)* use timeout for dispatch wakeups
+- *(tower)* trim runtime tokio features
+- forbid unsafe code
+- *(tower)* format probe closure
+- *(tower)* arm probe wakeup timers
+- *(tower)* avoid exact timer boundaries
+- *(tower)* format controller helper
+- *(tower)* centralize probe transition wakeups
+- *(tower)* remove unsafe future projection
+- *(tower)* narrow controller access
+
 ## [0.1.0-rc.3](https://github.com/conradludgate/loadpace/compare/loadpace-tower-v0.1.0-rc.2...loadpace-tower-v0.1.0-rc.3) - 2026-09-14
 
 ### Added

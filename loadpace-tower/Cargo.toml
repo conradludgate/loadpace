@@ -1,6 +1,6 @@
 [package]
 name = "loadpace-tower"
-version = "0.1.0-rc.3"
+version = "0.1.0-rc.4"
 edition = "2024"
 rust-version = "1.85"
 description = "Tower adapter for adaptive client-side load balancing and backpressure"
