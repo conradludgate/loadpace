@@ -74,55 +74,40 @@ impl<S> AdaptiveEndpoint<S> {
         }
     }
 
-    pub fn snapshot(&self) -> loadpace::ControllerSnapshot {
-        let (snapshot, changed) = {
+    fn with_controller<T>(
+        &self,
+        operation: impl FnOnce(&mut EndpointController) -> T,
+    ) -> T {
+        let (result, changed) = {
             let mut controller = self
                 .shared
                 .controller
                 .lock()
                 .expect("controller mutex poisoned");
             let before = controller.probe().current();
-            let snapshot = controller.snapshot(Instant::now());
-            (snapshot, before != controller.probe().current())
+            let result = operation(&mut controller);
+            (result, before != controller.probe().current())
         };
         if changed {
             self.shared.dispatch.notify_waiters();
         }
-        snapshot
+        result
+    }
+
+    pub fn snapshot(&self) -> loadpace::ControllerSnapshot {
+        self.with_controller(|controller| controller.snapshot(Instant::now()))
     }
 
     pub fn start_positive_probe(&self, delta: f64, until: Instant) {
-        let now = Instant::now();
-        let changed = {
-            let mut controller = self
-                .shared
-                .controller
-                .lock()
-                .expect("controller mutex poisoned");
-            let before = controller.probe().current();
-            controller.start_positive_probe(delta, until, now);
-            before != controller.probe().current()
-        };
-        if changed {
-            self.shared.dispatch.notify_waiters();
-        }
+        self.with_controller(|controller| {
+            controller.start_positive_probe(delta, until, Instant::now());
+        });
     }
 
     pub fn start_negative_probe(&self, factor: f64, until: Instant) {
-        let now = Instant::now();
-        let changed = {
-            let mut controller = self
-                .shared
-                .controller
-                .lock()
-                .expect("controller mutex poisoned");
-            let before = controller.probe().current();
-            controller.start_negative_probe(factor, until, now);
-            before != controller.probe().current()
-        };
-        if changed {
-            self.shared.dispatch.notify_waiters();
-        }
+        self.with_controller(|controller| {
+            controller.start_negative_probe(factor, until, Instant::now());
+        });
     }
 
     /// Gives a caller-provided RNG a time-gated chance to start a probe.
@@ -134,39 +119,17 @@ impl<S> AdaptiveEndpoint<S> {
         schedule: &loadpace::ProbeSchedule,
         rng: &mut R,
     ) -> Option<loadpace::Probe> {
-        let now = Instant::now();
-        let (probe, changed) = {
-            let mut controller = self
-                .shared
-                .controller
-                .lock()
-                .expect("controller mutex poisoned");
-            let before = controller.probe().current();
-            let probe = controller.maybe_start_probe(schedule, rng, now);
-            (probe, before != controller.probe().current())
-        };
-        if changed {
-            self.shared.dispatch.notify_waiters();
-        }
-        probe
+        self.with_controller(|controller| {
+            controller.maybe_start_probe(schedule, rng, Instant::now())
+        })
     }
 
     pub fn load_metric(&self) -> LoadMetric {
-        let (metric, changed) = {
-            let mut controller = self
-                .shared
-                .controller
-                .lock()
-                .expect("controller mutex poisoned");
-            let before = controller.probe().current();
+        self.with_controller(|controller| {
             let now = Instant::now();
             controller.refresh(now);
-            (LoadMetric(controller.load(now)), before != controller.probe().current())
-        };
-        if changed {
-            self.shared.dispatch.notify_waiters();
-        }
-        metric
+            LoadMetric(controller.load(now))
+        })
     }
 }
 
