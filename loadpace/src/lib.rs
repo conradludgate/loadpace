@@ -1,7 +1,16 @@
-//! Runtime-independent adaptive client-side load balancing and backpressure.
+//! Adaptive client-side load balancing for changing service fleets, with
+//! bounded backpressure.
 //!
-//! This crate contains the deterministic controller and simulator. Framework
-//! integrations live in separate crates such as `loadpace-tower`.
+//! A client may need to balance work across endpoints whose capacities and
+//! latencies differ or change as the fleet scales. Static rate and concurrency
+//! limits cannot adapt to those differences, while unbounded local queues hide
+//! overload. Loadpace learns an operating point for each endpoint, paces work
+//! toward it, predicts completion cost for endpoint selection, and stops local
+//! admission when the bounded scheduling horizon is full.
+//!
+//! This crate contains the runtime-independent controller and deterministic
+//! simulator. Framework integrations live in separate crates such as
+//! `loadpace-tower` and `loadpace-rama`.
 
 #![forbid(unsafe_code)]
 

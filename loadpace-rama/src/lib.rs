@@ -1,4 +1,12 @@
-//! Rama integration for the [`loadpace`] adaptive controller.
+//! Rama integration for adaptive client-side load balancing and backpressure.
+//!
+//! Use this crate when Rama services need to balance requests across endpoints
+//! with different or changing capacities. The adapter keeps admission bounded,
+//! paces dispatch using each endpoint's learned operating point, and exposes
+//! predicted completion cost for a higher-level balancer.
+//!
+//! The implementation fits Rama's direct `serve` model rather than relying on
+//! Tower's readiness phase.
 //!
 //! Rama's [`Service`] trait has no `poll_ready` phase. This adapter therefore
 //! reserves a slot synchronously when [`AdaptiveEndpoint::serve`] is called.
