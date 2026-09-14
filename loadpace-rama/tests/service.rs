@@ -3,8 +3,8 @@ use loadpace_rama::{AdaptiveEndpoint, AdaptiveLayer, ServiceError};
 use rama::{Layer, Service};
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 use tokio::sync::Notify;
 
@@ -19,7 +19,10 @@ impl Service<u64> for Echo {
     type Output = u64;
     type Error = &'static str;
 
-    fn serve(&self, request: u64) -> impl Future<Output = Result<Self::Output, Self::Error>> + Send {
+    fn serve(
+        &self,
+        request: u64,
+    ) -> impl Future<Output = Result<Self::Output, Self::Error>> + Send {
         async move { Ok(request) }
     }
 }
@@ -30,7 +33,10 @@ impl Service<u64> for Failing {
     type Output = u64;
     type Error = &'static str;
 
-    fn serve(&self, _request: u64) -> impl Future<Output = Result<Self::Output, Self::Error>> + Send {
+    fn serve(
+        &self,
+        _request: u64,
+    ) -> impl Future<Output = Result<Self::Output, Self::Error>> + Send {
         async { Err("overloaded") }
     }
 }
@@ -45,7 +51,10 @@ impl Service<u64> for Held {
     type Output = u64;
     type Error = &'static str;
 
-    fn serve(&self, request: u64) -> impl Future<Output = Result<Self::Output, Self::Error>> + Send {
+    fn serve(
+        &self,
+        request: u64,
+    ) -> impl Future<Output = Result<Self::Output, Self::Error>> + Send {
         let started = Arc::clone(&self.started);
         let release = Arc::clone(&self.release);
         let starts = Arc::clone(&self.starts);

@@ -12,8 +12,8 @@ use loadpace::{
     ControllerSnapshot, DispatchReservation, DispatchState, EndpointConfig, EndpointController,
     InFlightRequest, Outcome, Probe, ProbeSchedule, ScheduleError,
 };
-use rand::Rng;
 use rama::{Layer, Service};
+use rand::Rng;
 use std::error::Error;
 use std::fmt;
 use std::future::Future;
@@ -326,10 +326,7 @@ where
     loop {
         let notified = shared.dispatch.notified();
         let (decision, probe_until) = {
-            let mut controller = shared
-                .controller
-                .lock()
-                .expect("controller mutex poisoned");
+            let mut controller = shared.controller.lock().expect("controller mutex poisoned");
             let current = now();
             controller.refresh(current);
             (
