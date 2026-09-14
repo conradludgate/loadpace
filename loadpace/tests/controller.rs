@@ -177,7 +177,7 @@ fn gradient2_limits_healthy_updates_to_the_configured_interval() {
         now + Duration::from_secs(1),
     ));
     assert_eq!(gradient.updates(), 2);
-    assert_eq!(gradient.concurrency(), 1.2);
+    assert!((gradient.concurrency() - 1.2).abs() < 1e-9);
 }
 
 #[test]
