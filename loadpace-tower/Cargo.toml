@@ -1,6 +1,6 @@
 [package]
 name = "loadpace-tower"
-version = "0.1.0-rc.1"
+version = "0.1.0-rc.2"
 edition = "2024"
 rust-version = "1.85"
 description = "Tower adapters for the loadpace adaptive controller"
@@ -12,7 +12,7 @@ categories = ["network-programming", "asynchronous"]
 
 [dependencies]
 futures-core = "0.3"
-loadpace = { version = "0.1.0-rc.1", path = ".." }
+loadpace = { version = "0.1.0-rc.2", path = ".." }
 rand = "0.10"
 tokio = { version = "1", features = ["sync", "time"] }
 tower = { version = "0.5", features = ["discover", "load"] }
