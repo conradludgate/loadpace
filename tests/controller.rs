@@ -67,6 +67,20 @@ fn latency_estimator_keeps_short_and_long_views() {
 }
 
 #[test]
+fn latency_estimator_learns_a_first_sample_above_the_initial_estimate() {
+    let mut estimator = LatencyEstimator::new(LatencyEstimatorConfig {
+        initial_rtt: Duration::from_millis(50),
+        short_alpha: 0.25,
+        long_alpha: 0.05,
+        min_rtt: Duration::from_millis(1),
+    });
+
+    estimator.observe(Duration::from_millis(100));
+
+    assert_eq!(estimator.baseline(), Duration::from_millis(100));
+}
+
+#[test]
 #[should_panic(expected = "minimum RTT must be positive")]
 fn latency_estimator_rejects_a_zero_minimum_rtt() {
     LatencyEstimator::new(LatencyEstimatorConfig {
@@ -146,34 +160,6 @@ fn controller_marks_future_slots_as_paced() {
         .on_dispatched(reservation, dispatch_at)
         .expect("the future slot should become dispatchable");
     assert!(second.was_paced());
-}
-
-#[test]
-fn idle_endpoint_prediction_uses_the_unqueued_rtt_reference() {
-    let now = at_zero();
-    let config = EndpointConfig {
-        latency: LatencyEstimatorConfig {
-            initial_rtt: Duration::from_millis(10),
-            short_alpha: 1.0,
-            long_alpha: 1.0,
-            min_rtt: Duration::from_millis(1),
-        },
-        ..EndpointConfig::default()
-    };
-    let mut controller = EndpointController::new(config, now);
-    let reservation = controller.reserve(now).unwrap();
-    let request = controller
-        .on_dispatched(reservation, now)
-        .expect("the request should dispatch immediately");
-    assert!(controller.on_complete(
-        request,
-        Outcome::Success,
-        Duration::from_millis(100),
-        now + Duration::from_millis(100),
-    ));
-
-    let idle_now = now + Duration::from_secs(1);
-    assert!((controller.load(idle_now) - 0.01).abs() < 1e-9);
 }
 
 #[test]

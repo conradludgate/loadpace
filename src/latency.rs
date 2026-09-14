@@ -33,7 +33,7 @@ pub struct LatencyEstimator {
     config: LatencyEstimatorConfig,
     short: f64,
     long: f64,
-    baseline: f64,
+    baseline: Option<f64>,
     samples: u64,
 }
 
@@ -58,7 +58,7 @@ impl LatencyEstimator {
             config,
             short: initial,
             long: initial,
-            baseline: initial,
+            baseline: None,
             samples: 0,
         }
     }
@@ -67,10 +67,11 @@ impl LatencyEstimator {
         let value = sample.max(self.config.min_rtt).as_secs_f64();
         self.short = ewma(self.short, value, self.config.short_alpha);
         self.long = ewma(self.long, value, self.config.long_alpha);
-        self.baseline = self
-            .baseline
-            .min(value)
-            .max(self.config.min_rtt.as_secs_f64());
+        self.baseline = Some(
+            self.baseline
+                .map_or(value, |baseline| baseline.min(value))
+                .max(self.config.min_rtt.as_secs_f64()),
+        );
         self.samples += 1;
     }
 
@@ -87,7 +88,11 @@ impl LatencyEstimator {
     }
 
     pub fn baseline(&self) -> Duration {
-        Duration::from_secs_f64(self.baseline)
+        Duration::from_secs_f64(
+            self.baseline
+                .unwrap_or(self.config.initial_rtt.as_secs_f64())
+                .max(self.config.min_rtt.as_secs_f64()),
+        )
     }
 
     pub fn samples(&self) -> u64 {
