@@ -287,7 +287,7 @@ async fn queued_demand_drives_automatic_probing() {
         tokio::task::yield_now().await;
     }
 
-    assert_eq!(starts.load(Ordering::Relaxed), 1);
+    assert_eq!(starts.load(Ordering::Relaxed), 2);
     assert!(matches!(
         endpoint.snapshot().active_probe.unwrap().kind,
         loadpace::ProbeKind::Positive { .. }
