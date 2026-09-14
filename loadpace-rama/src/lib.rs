@@ -28,7 +28,7 @@ use std::fmt;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard};
 use std::time::Instant;
 use tokio::sync::Notify;
 
@@ -109,6 +109,16 @@ fn now() -> Instant {
     tokio::time::Instant::now().into_std()
 }
 
+fn lock_unpoisoned<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    // Controller operations preserve their invariants without panicking. If a
+    // caller panics while holding an internal lock, keep the endpoint usable
+    // rather than turning that unrelated panic into permanent backpressure.
+    match mutex.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    }
+}
+
 /// A Rama service with per-endpoint adaptive pacing and bounded admission.
 ///
 /// The wrapped service is shared through an [`Arc`], so concurrent requests
@@ -141,11 +151,7 @@ impl<S> AdaptiveEndpoint<S> {
 
     fn with_controller<T>(&self, operation: impl FnOnce(&mut EndpointController) -> T) -> T {
         let (result, changed) = {
-            let mut controller = self
-                .shared
-                .controller
-                .lock()
-                .expect("controller mutex poisoned");
+            let mut controller = lock_unpoisoned(&self.shared.controller);
             let before = controller.probe().current();
             let result = operation(&mut controller);
             (result, before != controller.probe().current())
@@ -219,17 +225,17 @@ where
         &self,
         request: Request,
     ) -> impl Future<Output = Result<Self::Output, Self::Error>> + Send {
-        let reservation = self
-            .shared
-            .controller
-            .lock()
-            .expect("controller mutex poisoned")
-            .reserve(now());
+        let reservation = lock_unpoisoned(&self.shared.controller).reserve(now());
 
         match reservation {
             Ok(reservation) => {
                 let guard = RequestGuard::new(Arc::clone(&self.shared), reservation);
-                Box::pin(dispatch_request(Arc::clone(&self.shared), request, guard))
+                Box::pin(dispatch_request(
+                    Arc::clone(&self.shared),
+                    request,
+                    reservation,
+                    guard,
+                ))
                     as Pin<Box<dyn Future<Output = Result<S::Output, Self::Error>> + Send>>
             }
             Err(error) => Box::pin(async move { Err(ServiceError::Rejected(error)) })
@@ -270,46 +276,39 @@ impl<S> Layer<S> for AdaptiveLayer {
     }
 }
 
+enum RequestState {
+    Reserved(DispatchReservation),
+    Dispatched(InFlightRequest),
+    Finished,
+}
+
 struct RequestGuard<S> {
     shared: Arc<Shared<S>>,
-    reservation: Option<DispatchReservation>,
-    active: Option<InFlightRequest>,
-    finished: bool,
+    state: RequestState,
 }
 
 impl<S> RequestGuard<S> {
     fn new(shared: Arc<Shared<S>>, reservation: DispatchReservation) -> Self {
         Self {
             shared,
-            reservation: Some(reservation),
-            active: None,
-            finished: false,
+            state: RequestState::Reserved(reservation),
         }
     }
 
     fn mark_dispatched(&mut self, active: InFlightRequest) {
-        self.reservation = None;
-        self.active = Some(active);
+        self.state = RequestState::Dispatched(active);
     }
 
     fn finish(&mut self, outcome: Outcome, now: Instant) {
-        if self.finished {
-            return;
-        }
-        self.finished = true;
-        if let Some(active) = self.active.take() {
-            let latency = now.saturating_duration_since(active.dispatched_at());
-            self.shared
-                .controller
-                .lock()
-                .expect("controller mutex poisoned")
-                .on_complete(active, outcome, latency, now);
-        } else if let Some(reservation) = self.reservation.take() {
-            self.shared
-                .controller
-                .lock()
-                .expect("controller mutex poisoned")
-                .cancel(reservation, now);
+        match std::mem::replace(&mut self.state, RequestState::Finished) {
+            RequestState::Dispatched(active) => {
+                let latency = now.saturating_duration_since(active.dispatched_at());
+                lock_unpoisoned(&self.shared.controller).on_complete(active, outcome, latency, now);
+            }
+            RequestState::Reserved(reservation) => {
+                lock_unpoisoned(&self.shared.controller).cancel(reservation, now);
+            }
+            RequestState::Finished => return,
         }
         self.shared.dispatch.notify_waiters();
     }
@@ -317,15 +316,14 @@ impl<S> RequestGuard<S> {
 
 impl<S> Drop for RequestGuard<S> {
     fn drop(&mut self) {
-        if !self.finished {
-            self.finish(Outcome::Failure, now());
-        }
+        self.finish(Outcome::Failure, now());
     }
 }
 
 async fn dispatch_request<S, Request>(
     shared: Arc<Shared<S>>,
     request: Request,
+    reservation: DispatchReservation,
     mut guard: RequestGuard<S>,
 ) -> Result<S::Output, ServiceError<S::Error>>
 where
@@ -334,10 +332,6 @@ where
     S::Error: Send + 'static,
     Request: Send + 'static,
 {
-    let reservation = guard
-        .reservation
-        .expect("request guard must begin with a reservation");
-
     loop {
         let notified = shared.dispatch.notified();
         let mut notified = std::pin::pin!(notified);
@@ -346,21 +340,20 @@ where
         // lost, leaving this request asleep indefinitely.
         notified.as_mut().enable();
         let (decision, probe_until, next_probe_at, probe_changed) = {
-            let mut controller = shared.controller.lock().expect("controller mutex poisoned");
+            let mut controller = lock_unpoisoned(&shared.controller);
             let current = now();
             let before = controller.probe().current();
             controller.refresh(current);
             let needs_probe = controller.inflight() > 0 && controller.queued() > 0;
             if needs_probe {
                 let schedule = controller.config().probe_schedule.clone();
-                let mut rng = shared.probe_rng.lock().expect("probe RNG mutex poisoned");
+                let mut rng = lock_unpoisoned(&shared.probe_rng);
                 controller.maybe_start_probe(&schedule, &mut *rng, current);
             }
             let active_probe = controller.probe().current();
-            let next_probe_at = if needs_probe && active_probe.is_none() {
-                controller.probe().next_probe_at()
-            } else {
-                None
+            let next_probe_at = match (needs_probe, active_probe) {
+                (true, None) => controller.probe().next_probe_at(),
+                _ => None,
             };
             (
                 controller.dispatch_state(reservation, current),
@@ -376,11 +369,10 @@ where
         match decision {
             DispatchState::Ready => break,
             DispatchState::WaitUntil(deadline) => {
-                let wake_at = [Some(deadline), probe_until, next_probe_at]
+                let wake_at = probe_until
                     .into_iter()
-                    .flatten()
-                    .min()
-                    .expect("dispatch wait must have a deadline");
+                    .chain(next_probe_at)
+                    .fold(deadline, |earliest, candidate| earliest.min(candidate));
                 let delay = wake_at.saturating_duration_since(now());
                 let _ = tokio::time::timeout(delay, notified.as_mut()).await;
             }
@@ -388,18 +380,16 @@ where
                 notified.as_mut().await;
             }
             DispatchState::Cancelled => {
-                panic!("an AdaptiveEndpoint request was cancelled while being polled");
+                unreachable!("a live request reservation cannot be cancelled externally");
             }
         }
     }
 
     let current = now();
-    let active = shared
-        .controller
-        .lock()
-        .expect("controller mutex poisoned")
-        .on_dispatched(reservation, current)
-        .expect("dispatch state changed unexpectedly");
+    let Some(active) = lock_unpoisoned(&shared.controller).on_dispatched(reservation, current)
+    else {
+        unreachable!("a ready dispatch reservation must be dispatchable");
+    };
     guard.mark_dispatched(active);
     // Removing the FIFO head can make the next reservation eligible. Wake it
     // even when its old timer has not elapsed because the committed TAT may

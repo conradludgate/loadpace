@@ -9,7 +9,7 @@ use rand::rngs::StdRng;
 use std::future::Future;
 use std::marker::PhantomData;
 use std::pin::Pin;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::task::{Context, Poll};
 use std::time::Instant;
 use tower::Service;
@@ -52,6 +52,16 @@ fn now() -> Instant {
     tokio::time::Instant::now().into_std()
 }
 
+fn lock_unpoisoned<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    // Controller operations preserve their invariants without panicking. If a
+    // caller panics while holding an internal lock, keep the endpoint usable
+    // rather than turning that unrelated panic into permanent backpressure.
+    match mutex.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    }
+}
+
 /// A Tower service with per-endpoint adaptive pacing and bounded admission.
 ///
 /// `poll_ready` reports whether another request can enter the endpoint's
@@ -87,11 +97,7 @@ impl<S> AdaptiveEndpoint<S> {
 
     fn with_controller<T>(&self, operation: impl FnOnce(&mut EndpointController) -> T) -> T {
         let (result, changed) = {
-            let mut controller = self
-                .shared
-                .controller
-                .lock()
-                .expect("controller mutex poisoned");
+            let mut controller = lock_unpoisoned(&self.shared.controller);
             let before = controller.probe().current();
             let result = operation(&mut controller);
             (result, before != controller.probe().current())
@@ -230,14 +236,10 @@ where
             return Poll::Ready(Ok(()));
         }
 
-        let mut readiness = self
-            .readiness
-            .lock()
-            .expect("readiness future mutex poisoned");
+        let mut readiness = lock_unpoisoned(&self.readiness);
         if readiness.is_none() {
             match Arc::clone(&self.shared.ready).try_acquire_owned() {
                 Ok(permit) => {
-                    drop(readiness);
                     self.readiness_permit = Some(permit);
                     return Poll::Ready(Ok(()));
                 }
@@ -245,48 +247,44 @@ where
                     *readiness = Some(Box::pin(Arc::clone(&self.shared.ready).acquire_owned()));
                 }
                 Err(tokio::sync::TryAcquireError::Closed) => {
-                    panic!("AdaptiveEndpoint readiness semaphore was closed")
+                    unreachable!("the endpoint owns the readiness semaphore")
                 }
             }
         }
 
-        match readiness
-            .as_mut()
-            .expect("readiness future must exist")
-            .as_mut()
-            .poll(cx)
-        {
+        let Some(future) = readiness.as_mut() else {
+            unreachable!("a readiness future exists after acquiring no permits");
+        };
+        match future.as_mut().poll(cx) {
             Poll::Ready(Ok(permit)) => {
                 *readiness = None;
                 self.readiness_permit = Some(permit);
                 Poll::Ready(Ok(()))
             }
             Poll::Ready(Err(_)) => {
-                panic!("AdaptiveEndpoint readiness semaphore was closed")
+                unreachable!("the endpoint owns the readiness semaphore")
             }
             Poll::Pending => Poll::Pending,
         }
     }
 
     fn call(&mut self, request: Request) -> Self::Future {
-        assert!(
-            self.readiness_permit.is_some(),
-            "AdaptiveEndpoint::call invoked without available readiness"
-        );
-        let readiness_permit = self
-            .readiness_permit
-            .take()
-            .expect("readiness permit must exist after poll_ready");
-        let reservation = self
-            .shared
-            .controller
-            .lock()
-            .expect("controller mutex poisoned")
-            .reserve(now())
-            .expect("readiness reservation was not reflected in controller capacity");
+        let Some(readiness_permit) = self.readiness_permit.take() else {
+            // This is required by Tower's Service contract: call must follow a
+            // successful poll_ready, and there is no S::Error conversion for a
+            // caller violating that contract.
+            panic!("AdaptiveEndpoint::call invoked without available readiness");
+        };
+        let reservation = lock_unpoisoned(&self.shared.controller).reserve(now());
+        let Ok(reservation) = reservation else {
+            // The semaphore permit and controller queue are acquired as one
+            // logical reservation. Failure here indicates an internal state
+            // invariant was broken, not ordinary endpoint backpressure.
+            panic!("readiness reservation was not reflected in controller capacity");
+        };
 
         let guard = RequestGuard::new(Arc::clone(&self.shared), reservation, readiness_permit);
-        let future = dispatch_request(Arc::clone(&self.shared), request, guard);
+        let future = dispatch_request(Arc::clone(&self.shared), request, reservation, guard);
         ResponseFuture {
             inner: Box::pin(future),
         }
@@ -306,12 +304,16 @@ impl<T, E> Future for ResponseFuture<T, E> {
     }
 }
 
+enum RequestState {
+    Reserved(DispatchReservation),
+    Dispatched(InFlightRequest),
+    Finished,
+}
+
 struct RequestGuard<S> {
     shared: Arc<Shared<S>>,
-    reservation: Option<DispatchReservation>,
+    state: RequestState,
     readiness_permit: Option<tokio::sync::OwnedSemaphorePermit>,
-    active: Option<InFlightRequest>,
-    finished: bool,
 }
 
 impl<S> RequestGuard<S> {
@@ -322,39 +324,28 @@ impl<S> RequestGuard<S> {
     ) -> Self {
         Self {
             shared,
-            reservation: Some(reservation),
+            state: RequestState::Reserved(reservation),
             readiness_permit: Some(readiness_permit),
-            active: None,
-            finished: false,
         }
     }
 
     fn mark_dispatched(&mut self, active: InFlightRequest) {
-        self.reservation = None;
-        self.active = Some(active);
+        self.state = RequestState::Dispatched(active);
         // The controller has removed the request from its virtual queue, so
         // releasing this permit cannot expose more work than the queue allows.
         self.readiness_permit = None;
     }
 
     fn finish(&mut self, outcome: Outcome, now: Instant) {
-        if self.finished {
-            return;
-        }
-        self.finished = true;
-        if let Some(active) = self.active.take() {
-            let latency = now.saturating_duration_since(active.dispatched_at());
-            self.shared
-                .controller
-                .lock()
-                .expect("controller mutex poisoned")
-                .on_complete(active, outcome, latency, now);
-        } else if let Some(reservation) = self.reservation.take() {
-            self.shared
-                .controller
-                .lock()
-                .expect("controller mutex poisoned")
-                .cancel(reservation, now);
+        match std::mem::replace(&mut self.state, RequestState::Finished) {
+            RequestState::Dispatched(active) => {
+                let latency = now.saturating_duration_since(active.dispatched_at());
+                lock_unpoisoned(&self.shared.controller).on_complete(active, outcome, latency, now);
+            }
+            RequestState::Reserved(reservation) => {
+                lock_unpoisoned(&self.shared.controller).cancel(reservation, now);
+            }
+            RequestState::Finished => return,
         }
         // Release capacity only after the controller has been updated. A
         // newly woken caller must observe the cancellation/completion first.
@@ -365,15 +356,14 @@ impl<S> RequestGuard<S> {
 
 impl<S> Drop for RequestGuard<S> {
     fn drop(&mut self) {
-        if !self.finished {
-            self.finish(Outcome::Failure, now());
-        }
+        self.finish(Outcome::Failure, now());
     }
 }
 
 async fn dispatch_request<S, Request>(
     shared: Arc<Shared<S>>,
     request: Request,
+    reservation: DispatchReservation,
     mut guard: RequestGuard<S>,
 ) -> Result<S::Response, S::Error>
 where
@@ -383,10 +373,6 @@ where
     S::Error: Send + 'static,
     Request: Send + 'static,
 {
-    let reservation = guard
-        .reservation
-        .expect("request guard must begin with a reservation");
-
     loop {
         let notified = shared.dispatch.notified();
         let mut notified = std::pin::pin!(notified);
@@ -395,21 +381,20 @@ where
         // lost, leaving this request asleep indefinitely.
         notified.as_mut().enable();
         let (decision, probe_until, next_probe_at, probe_changed) = {
-            let mut controller = shared.controller.lock().expect("controller mutex poisoned");
+            let mut controller = lock_unpoisoned(&shared.controller);
             let current = now();
             let before = controller.probe().current();
             controller.refresh(current);
             let needs_probe = controller.inflight() > 0 && controller.queued() > 0;
             if needs_probe {
                 let schedule = controller.config().probe_schedule.clone();
-                let mut rng = shared.probe_rng.lock().expect("probe RNG mutex poisoned");
+                let mut rng = lock_unpoisoned(&shared.probe_rng);
                 controller.maybe_start_probe(&schedule, &mut *rng, current);
             }
             let active_probe = controller.probe().current();
-            let next_probe_at = if needs_probe && active_probe.is_none() {
-                controller.probe().next_probe_at()
-            } else {
-                None
+            let next_probe_at = match (needs_probe, active_probe) {
+                (true, None) => controller.probe().next_probe_at(),
+                _ => None,
             };
             (
                 controller.dispatch_state(reservation, current),
@@ -427,11 +412,10 @@ where
                 break;
             }
             DispatchState::WaitUntil(deadline) => {
-                let wake_at = [Some(deadline), probe_until, next_probe_at]
+                let wake_at = probe_until
                     .into_iter()
-                    .flatten()
-                    .min()
-                    .expect("dispatch wait must have a deadline");
+                    .chain(next_probe_at)
+                    .fold(deadline, |earliest, candidate| earliest.min(candidate));
                 let delay = wake_at.saturating_duration_since(now());
                 let _ = tokio::time::timeout(delay, notified.as_mut()).await;
             }
@@ -439,7 +423,7 @@ where
                 notified.as_mut().await;
             }
             DispatchState::Cancelled => {
-                panic!("an AdaptiveEndpoint request was cancelled while being polled");
+                unreachable!("a live request reservation cannot be cancelled externally");
             }
         }
     }
@@ -449,23 +433,18 @@ where
         match std::future::poll_fn(|cx| inner.poll_ready(cx)).await {
             Ok(()) => {
                 let now = now();
-                let active = shared
-                    .controller
-                    .lock()
-                    .expect("controller mutex poisoned")
-                    .on_dispatched(reservation, now)
-                    .expect("dispatch state changed unexpectedly");
+                let Some(active) =
+                    lock_unpoisoned(&shared.controller).on_dispatched(reservation, now)
+                else {
+                    unreachable!("a ready dispatch reservation must be dispatchable");
+                };
                 guard.mark_dispatched(active);
                 let future = inner.call(request);
                 drop(inner);
                 future.await
             }
             Err(error) => {
-                shared
-                    .controller
-                    .lock()
-                    .expect("controller mutex poisoned")
-                    .on_admission_failure(now());
+                lock_unpoisoned(&shared.controller).on_admission_failure(now());
                 Err(error)
             }
         }
