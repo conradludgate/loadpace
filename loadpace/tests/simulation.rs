@@ -1,6 +1,6 @@
 use loadpace::{
     EndpointConfig, Gradient2Config, LatencyEstimatorConfig, SimulatedEndpoint, SimulationConfig,
-    simulate,
+    ProbeSchedule, simulate,
 };
 use std::time::Duration;
 
@@ -21,6 +21,7 @@ fn endpoint(queue_capacity: usize, service_time: Duration) -> SimulatedEndpoint 
                 max_concurrency: 100.0,
                 ..Gradient2Config::default()
             },
+            probe_schedule: ProbeSchedule::default(),
         },
         workers: 1,
         service_time,

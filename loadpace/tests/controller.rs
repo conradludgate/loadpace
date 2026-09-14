@@ -397,6 +397,7 @@ fn controller_uses_little_law_and_records_failures() {
             initial_concurrency: 1.3,
             ..Gradient2Config::default()
         },
+        probe_schedule: ProbeSchedule::default(),
     };
     let mut controller = EndpointController::new(config, now);
     let reservation = controller.reserve(now).unwrap();
