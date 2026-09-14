@@ -415,8 +415,8 @@ fn servers_joining_after_warmup_receive_capacity_proportional_work() {
         client_specs(8, Duration::ZERO),
         vec![server(1)],
         Some((Duration::from_secs(5), server(3))),
-        Duration::from_secs(15),
         Duration::from_secs(30),
+        Duration::from_secs(45),
     );
 
     let ratio = report.server_completed[1] as f64 / report.server_completed[0] as f64;
