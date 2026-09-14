@@ -1,3 +1,10 @@
 [workspace]
 release_always = false
 git_release_type = "auto"
+
+# The yanked rc0 release of loadpace-tower depends on the yanked rc0 release
+# of loadpace, so cargo-semver-checks cannot use it as a comparison baseline.
+# Keep API compatibility review explicit until a non-yanked baseline exists.
+[[package]]
+name = "loadpace-tower"
+semver_check = false
