@@ -101,7 +101,7 @@ impl Gradient2 {
     /// diagnostics, but it must not increase the operating point: low demand
     /// is not evidence that the endpoint has spare capacity.
     pub fn on_rtt(&mut self, current_rtt: Duration, long_rtt: Duration, inflight: usize) -> bool {
-        self.on_rtt_at(current_rtt, long_rtt, inflight, true, Instant::now())
+        self.on_rtt_at(current_rtt, long_rtt, inflight, Instant::now())
     }
 
     /// Updates the operating point at an explicit time.
