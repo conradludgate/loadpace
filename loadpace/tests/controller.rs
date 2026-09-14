@@ -56,6 +56,7 @@ fn latency_estimator_keeps_short_and_long_views() {
         short_alpha: 0.5,
         long_alpha: 0.1,
         min_rtt: Duration::from_millis(1),
+        baseline_window: Duration::from_secs(60),
     });
 
     estimator.observe(Duration::from_millis(20));
@@ -73,10 +74,28 @@ fn latency_estimator_learns_a_first_sample_above_the_initial_estimate() {
         short_alpha: 0.25,
         long_alpha: 0.05,
         min_rtt: Duration::from_millis(1),
+        baseline_window: Duration::from_secs(60),
     });
 
     assert_eq!(estimator.baseline(), Duration::from_millis(50));
     estimator.observe(Duration::from_millis(100));
+
+    assert_eq!(estimator.baseline(), Duration::from_millis(100));
+}
+
+#[test]
+fn latency_estimator_expires_stale_baseline_samples() {
+    let now = at_zero();
+    let mut estimator = LatencyEstimator::new(LatencyEstimatorConfig {
+        initial_rtt: Duration::from_millis(10),
+        short_alpha: 1.0,
+        long_alpha: 1.0,
+        min_rtt: Duration::from_millis(1),
+        baseline_window: Duration::from_secs(8),
+    });
+
+    estimator.observe_at(Duration::from_millis(10), now);
+    estimator.observe_at(Duration::from_millis(100), now + Duration::from_secs(8));
 
     assert_eq!(estimator.baseline(), Duration::from_millis(100));
 }
@@ -89,6 +108,7 @@ fn latency_estimator_rejects_a_zero_minimum_rtt() {
         short_alpha: 1.0,
         long_alpha: 1.0,
         min_rtt: Duration::ZERO,
+        baseline_window: Duration::from_secs(60),
     });
 }
 
@@ -382,6 +402,7 @@ fn controller_uses_little_law_and_records_failures() {
             short_alpha: 1.0,
             long_alpha: 1.0,
             min_rtt: Duration::from_millis(1),
+            baseline_window: Duration::from_secs(60),
         },
         gradient: Gradient2Config {
             initial_concurrency: 1.3,

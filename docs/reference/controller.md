@@ -44,7 +44,9 @@ newly joined clients alike; the long RTT EWMA remains available in snapshots
 and for direct `Gradient2` callers. Before the first successful sample, the
 configured initial RTT is used as the temporary baseline; the first sample
 then establishes the observed minimum even when it is slower than that initial
-estimate.
+estimate. The minimum is maintained over a bounded eight-bucket
+`LatencyEstimatorConfig::baseline_window`, allowing stale topology or routing
+observations to age out without allocating per-request history.
 
 ## `DispatchState`
 

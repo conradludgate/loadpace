@@ -42,6 +42,7 @@ let config = EndpointConfig {
         short_alpha: 0.25,
         long_alpha: 0.05,
         min_rtt: Duration::from_micros(1),
+        baseline_window: Duration::from_secs(60),
     },
     ..EndpointConfig::default()
 };

@@ -14,6 +14,7 @@ fn endpoint(queue_capacity: usize, service_time: Duration) -> SimulatedEndpoint 
                 short_alpha: 1.0,
                 long_alpha: 1.0,
                 min_rtt: service_time,
+                baseline_window: Duration::from_secs(60),
             },
             gradient: Gradient2Config {
                 initial_concurrency: 1.0,

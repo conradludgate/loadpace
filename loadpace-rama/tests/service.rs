@@ -67,6 +67,7 @@ fn config(queue_capacity: usize, initial_rtt: Duration) -> EndpointConfig {
             short_alpha: 1.0,
             long_alpha: 1.0,
             min_rtt: initial_rtt,
+            baseline_window: Duration::from_secs(60),
         },
         probe_schedule: ProbeSchedule {
             positive_probability: 0.0,

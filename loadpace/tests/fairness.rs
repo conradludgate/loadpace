@@ -68,6 +68,7 @@ fn config(initial_rtt: Duration) -> EndpointConfig {
             short_alpha: 0.25,
             long_alpha: 0.05,
             min_rtt: initial_rtt,
+            baseline_window: Duration::from_secs(60),
         },
         ..EndpointConfig::default()
     }

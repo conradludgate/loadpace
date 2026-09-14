@@ -336,7 +336,7 @@ impl EndpointController {
 
         match outcome {
             Outcome::Success => {
-                self.latency.observe(latency);
+                self.latency.observe_at(latency, now);
                 // Keep the congestion reference anchored to the endpoint's
                 // minimum RTT. A per-client long EWMA can absorb shared
                 // queueing and let an incumbent retain an unfair share when
