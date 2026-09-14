@@ -1,8 +1,7 @@
 use loadpace::{
     EndpointConfig, EndpointController, Gcra, Gradient2, Gradient2Config, LatencyEstimator,
-    LatencyEstimatorConfig, Outcome, ProbeKind, ProbeSchedule, ProbeState, ScheduleError,
+    LatencyEstimatorConfig, Outcome, ProbeKind, ProbeSchedule, ScheduleError,
 };
-use rand::SeedableRng;
 use std::time::{Duration, Instant};
 
 fn at_zero() -> Instant {
@@ -253,107 +252,60 @@ fn controller_marks_future_slots_as_paced() {
 }
 
 #[test]
-fn probes_are_additive_positive_and_multiplicative_negative() {
+fn controller_drives_probes_when_demand_waits() {
     let now = at_zero();
-    let mut state = ProbeState::new();
-
-    state.start_positive(1.0, now + Duration::from_secs(1));
-    assert_eq!(
-        state.effective_concurrency(8.0, now),
-        9.0,
-        "positive probes must be additive"
-    );
-    assert_eq!(
-        state.effective_concurrency(8.0, now + Duration::from_secs(1)),
-        8.0
-    );
-
-    state.start_negative(0.8, now + Duration::from_secs(2));
-    assert_eq!(
-        state.active(now).map(|probe| probe.kind),
-        Some(ProbeKind::Negative { factor: 0.8 })
-    );
-    assert!((state.effective_concurrency(8.0, now) - 6.4).abs() < f64::EPSILON);
-}
-
-#[test]
-fn controller_can_drive_seeded_stochastic_probes() {
-    let now = at_zero();
-    let mut controller = EndpointController::new(EndpointConfig::default(), now);
-    let schedule = ProbeSchedule {
-        positive_probability: 1.0,
-        negative_probability: 0.0,
-        positive_delta: 1.0,
-        ..ProbeSchedule::default()
+    let config = EndpointConfig {
+        probe_schedule: ProbeSchedule {
+            positive_probability: 1.0,
+            negative_probability: 0.0,
+            positive_delta: 1.0,
+            ..ProbeSchedule::default()
+        },
+        ..EndpointConfig::default()
     };
-    let mut rng = rand::rngs::StdRng::seed_from_u64(5);
+    let mut controller = EndpointController::new_with_seed(config, now, 5);
 
-    assert!(
-        controller
-            .maybe_start_probe(&schedule, &mut rng, now)
-            .is_some()
-    );
+    let first = controller.reserve(now).unwrap();
+    controller
+        .on_dispatched(first, now)
+        .expect("the first request should dispatch immediately");
+    controller.reserve(now).unwrap();
+    controller.refresh(now);
+
     assert_eq!(
-        controller.snapshot(now).effective_concurrency,
-        controller.snapshot(now).target_concurrency + 1.0
-    );
-}
-
-#[test]
-fn probe_schedule_is_time_gated() {
-    let now = at_zero();
-    let mut state = ProbeState::new();
-    let schedule = ProbeSchedule {
-        positive_probability: 1.0,
-        negative_probability: 0.0,
-        duration: Duration::from_millis(100),
-        min_interval: Duration::from_secs(1),
-        max_interval: Duration::from_secs(1),
-        ..ProbeSchedule::default()
-    };
-    let mut rng = rand::rngs::StdRng::seed_from_u64(5);
-
-    assert!(schedule.maybe_start(&mut state, &mut rng, now).is_some());
-    assert!(
-        schedule
-            .maybe_start(&mut state, &mut rng, now + Duration::from_millis(100))
-            .is_none()
-    );
-    assert!(
-        schedule
-            .maybe_start(&mut state, &mut rng, now + Duration::from_secs(1))
-            .is_some()
+        controller.active_probe().map(|probe| probe.kind),
+        Some(ProbeKind::Positive { delta: 1.0 })
     );
 }
 
 #[test]
 #[should_panic(expected = "probe probabilities")]
 fn probe_schedule_rejects_probabilities_that_exceed_one() {
-    let now = at_zero();
-    let mut state = ProbeState::new();
-    let schedule = ProbeSchedule {
-        positive_probability: 0.8,
-        negative_probability: 0.3,
-        ..ProbeSchedule::default()
+    let config = EndpointConfig {
+        probe_schedule: ProbeSchedule {
+            positive_probability: 0.8,
+            negative_probability: 0.3,
+            ..ProbeSchedule::default()
+        },
+        ..EndpointConfig::default()
     };
-    let mut rng = rand::rngs::StdRng::seed_from_u64(5);
 
-    schedule.maybe_start(&mut state, &mut rng, now);
+    EndpointController::new(config, at_zero());
 }
 
 #[test]
 #[should_panic(expected = "probe interval bounds")]
 fn probe_schedule_rejects_invalid_interval_bounds() {
-    let now = at_zero();
-    let mut state = ProbeState::new();
-    let schedule = ProbeSchedule {
-        min_interval: Duration::from_secs(2),
-        max_interval: Duration::from_secs(1),
-        ..ProbeSchedule::default()
+    let config = EndpointConfig {
+        probe_schedule: ProbeSchedule {
+            min_interval: Duration::from_secs(2),
+            max_interval: Duration::from_secs(1),
+            ..ProbeSchedule::default()
+        },
+        ..EndpointConfig::default()
     };
-    let mut rng = rand::rngs::StdRng::seed_from_u64(5);
 
-    schedule.maybe_start(&mut state, &mut rng, now);
+    EndpointController::new(config, at_zero());
 }
 
 #[test]

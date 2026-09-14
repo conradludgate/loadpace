@@ -20,13 +20,74 @@ pub struct Probe {
 
 /// Per-endpoint probe state.
 #[derive(Clone, Debug, Default)]
-pub struct ProbeState {
+pub(crate) struct ProbeState {
     active: Option<Probe>,
     next_probe_at: Option<Instant>,
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rand::SeedableRng;
+
+    fn at_zero() -> Instant {
+        Instant::now()
+    }
+
+    #[test]
+    fn probes_are_additive_positive_and_multiplicative_negative() {
+        let now = at_zero();
+        let mut state = ProbeState::new();
+
+        state.start_positive(1.0, now + Duration::from_secs(1));
+        assert_eq!(
+            state.effective_concurrency(8.0, now),
+            9.0,
+            "positive probes must be additive"
+        );
+        assert_eq!(
+            state.effective_concurrency(8.0, now + Duration::from_secs(1)),
+            8.0
+        );
+
+        state.start_negative(0.8, now + Duration::from_secs(2));
+        assert_eq!(
+            state.active(now).map(|probe| probe.kind),
+            Some(ProbeKind::Negative { factor: 0.8 })
+        );
+        assert!((state.effective_concurrency(8.0, now) - 6.4).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn probe_schedule_is_time_gated() {
+        let now = at_zero();
+        let mut state = ProbeState::new();
+        let schedule = ProbeSchedule {
+            positive_probability: 1.0,
+            negative_probability: 0.0,
+            duration: Duration::from_millis(100),
+            min_interval: Duration::from_secs(1),
+            max_interval: Duration::from_secs(1),
+            ..ProbeSchedule::default()
+        };
+        let mut rng = rand::rngs::StdRng::seed_from_u64(5);
+
+        assert!(schedule.maybe_start(&mut state, &mut rng, now).is_some());
+        assert!(
+            schedule
+                .maybe_start(&mut state, &mut rng, now + Duration::from_millis(100))
+                .is_none()
+        );
+        assert!(
+            schedule
+                .maybe_start(&mut state, &mut rng, now + Duration::from_secs(1))
+                .is_some()
+        );
+    }
+}
+
 impl ProbeState {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self::default()
     }
 
@@ -35,7 +96,7 @@ impl ProbeState {
     /// # Panics
     ///
     /// Panics when `delta` is not finite and strictly positive.
-    pub fn start_positive(&mut self, delta: f64, until: Instant) {
+    fn start_positive(&mut self, delta: f64, until: Instant) {
         assert!(
             delta.is_finite() && delta > 0.0,
             "positive probe delta must be positive"
@@ -51,7 +112,7 @@ impl ProbeState {
     /// # Panics
     ///
     /// Panics when `factor` is not finite or is outside `(0, 1)`.
-    pub fn start_negative(&mut self, factor: f64, until: Instant) {
+    fn start_negative(&mut self, factor: f64, until: Instant) {
         assert!(
             factor.is_finite() && (0.0..1.0).contains(&factor),
             "negative probe factor must be in (0, 1)"
@@ -62,14 +123,14 @@ impl ProbeState {
         });
     }
 
-    pub fn active(&mut self, now: Instant) -> Option<Probe> {
+    pub(crate) fn active(&mut self, now: Instant) -> Option<Probe> {
         if self.active.is_some_and(|probe| probe.until <= now) {
             self.active = None;
         }
         self.active
     }
 
-    pub fn effective_concurrency(&mut self, base: f64, now: Instant) -> f64 {
+    pub(crate) fn effective_concurrency(&mut self, base: f64, now: Instant) -> f64 {
         match self.active(now).map(|probe| probe.kind) {
             None => base,
             Some(ProbeKind::Positive { delta }) => base + delta,
@@ -77,19 +138,21 @@ impl ProbeState {
         }
     }
 
-    pub fn current(&self) -> Option<Probe> {
+    pub(crate) fn current(&self) -> Option<Probe> {
         self.active
     }
 
     /// Returns when the next probe decision may be made.
-    pub fn next_probe_at(&self) -> Option<Instant> {
+    pub(crate) fn next_probe_at(&self) -> Option<Instant> {
         self.next_probe_at
     }
 }
 
-/// Randomized probe policy. The random source is supplied by the caller so
-/// simulations can use a seeded RNG and production code can use its preferred
-/// entropy source.
+/// Randomized probe policy used internally by an [`crate::EndpointController`].
+///
+/// The controller owns the random source and decides when to consult this
+/// schedule. Applications only need to configure it when they want to tune
+/// the controller's defaults.
 #[derive(Clone, Debug)]
 pub struct ProbeSchedule {
     pub positive_probability: f64,
@@ -155,7 +218,7 @@ impl ProbeSchedule {
     ///
     /// Panics when this schedule contains invalid probabilities, perturbation
     /// parameters, or timing values. See [`Self::validate`].
-    pub fn maybe_start<R: Rng + ?Sized>(
+    pub(crate) fn maybe_start<R: Rng + ?Sized>(
         &self,
         state: &mut ProbeState,
         rng: &mut R,

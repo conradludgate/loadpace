@@ -3,7 +3,8 @@ use crate::gcra::{Gcra, saturating_add};
 use crate::gradient::{Gradient2, Gradient2Config};
 use crate::latency::{LatencyEstimator, LatencyEstimatorConfig};
 use crate::probe::{Probe, ProbeSchedule, ProbeState};
-use rand::Rng;
+use rand::SeedableRng;
+use rand::rngs::StdRng;
 use std::collections::{HashSet, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
@@ -21,7 +22,8 @@ pub struct EndpointConfig {
     pub latency: LatencyEstimatorConfig,
     /// Fractional operating-point configuration.
     pub gradient: Gradient2Config,
-    /// Randomized probe policy used by framework adapters.
+    /// Randomized probe policy used by the controller during normal dispatch
+    /// and load-selection refreshes.
     pub probe_schedule: ProbeSchedule,
 }
 
@@ -147,6 +149,7 @@ pub struct EndpointController {
     inflight: usize,
     completed: u64,
     failures: u64,
+    probe_rng: StdRng,
 }
 
 impl EndpointController {
@@ -157,6 +160,18 @@ impl EndpointController {
     /// Panics when the queue capacity or emergency inflight cap is zero, or
     /// when the nested latency or Gradient2 configuration is invalid.
     pub fn new(config: EndpointConfig, now: Instant) -> Self {
+        Self::new_with_rng(config, now, rand::make_rng())
+    }
+
+    /// Creates a controller with deterministic probe entropy.
+    ///
+    /// This is useful for simulations and tests. The controller still owns
+    /// all probe decisions; the seed only makes those decisions reproducible.
+    pub fn new_with_seed(config: EndpointConfig, now: Instant, seed: u64) -> Self {
+        Self::new_with_rng(config, now, StdRng::seed_from_u64(seed))
+    }
+
+    fn new_with_rng(config: EndpointConfig, now: Instant, probe_rng: StdRng) -> Self {
         assert!(
             config.queue_capacity > 0,
             "endpoint queue capacity must be positive"
@@ -183,6 +198,7 @@ impl EndpointController {
             inflight: 0,
             completed: 0,
             failures: 0,
+            probe_rng,
         }
     }
 
@@ -200,10 +216,6 @@ impl EndpointController {
 
     pub fn latency(&self) -> &LatencyEstimator {
         &self.latency
-    }
-
-    pub fn probe(&self) -> &ProbeState {
-        &self.probe
     }
 
     pub fn queued(&self) -> usize {
@@ -373,37 +385,31 @@ impl EndpointController {
         self.update_rate(now);
     }
 
-    /// Starts a temporary positive probe.
-    pub fn start_positive_probe(&mut self, delta: f64, until: Instant, now: Instant) {
-        self.probe.start_positive(delta, until);
-        self.update_rate(now);
-    }
-
-    /// Starts a temporary negative probe.
-    pub fn start_negative_probe(&mut self, factor: f64, until: Instant, now: Instant) {
-        self.probe.start_negative(factor, until);
-        self.update_rate(now);
-    }
-
-    /// Gives a seeded or production RNG a chance to start a temporary probe.
-    pub fn maybe_start_probe<R: Rng + ?Sized>(
-        &mut self,
-        schedule: &ProbeSchedule,
-        rng: &mut R,
-        now: Instant,
-    ) -> Option<Probe> {
-        let previous = self.probe.current();
-        let probe = schedule.maybe_start(&mut self.probe, rng, now);
-        if previous != self.probe.current() {
-            self.update_rate(now);
-        }
-        probe
-    }
-
-    /// Expires a probe, if necessary, and updates the pacer to the base rate.
+    /// Expires probes, lets the controller make a probe decision, and
+    /// refreshes the derived pacing rate.
     pub fn refresh(&mut self, now: Instant) {
+        // Refresh is called by normal dispatch and load-metric paths. Once an
+        // endpoint has produced a sample, keeping the schedule here means an
+        // endpoint that P2C is beginning to avoid can still receive a probe.
+        // Before that first observation, require an actual queued dispatch so
+        // the initial request is not treated as a probe opportunity.
+        if self.latency.samples() > 0 || (self.inflight > 0 && self.queued > 0) {
+            self.config
+                .probe_schedule
+                .maybe_start(&mut self.probe, &mut self.probe_rng, now);
+        }
         let _ = self.probe.active(now);
         self.update_rate(now);
+    }
+
+    /// Returns the currently active probe, if any.
+    pub fn active_probe(&self) -> Option<Probe> {
+        self.probe.current()
+    }
+
+    /// Returns the next time the controller may make a probe decision.
+    pub fn next_probe_at(&self) -> Option<Instant> {
+        self.probe.next_probe_at()
     }
 
     /// Predicts when one additional request would complete if current

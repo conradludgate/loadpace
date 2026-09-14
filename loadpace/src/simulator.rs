@@ -112,7 +112,8 @@ pub fn simulate(config: SimulationConfig) -> SimulationReport {
     let mut endpoints: Vec<_> = config
         .endpoints
         .into_iter()
-        .map(|endpoint| EndpointRuntime {
+        .enumerate()
+        .map(|(endpoint_index, endpoint)| EndpointRuntime {
             available_at: {
                 assert!(endpoint.workers > 0, "a simulated endpoint needs a worker");
                 assert!(
@@ -121,7 +122,11 @@ pub fn simulate(config: SimulationConfig) -> SimulationReport {
                 );
                 vec![start; endpoint.workers]
             },
-            controller: EndpointController::new(endpoint.config, start),
+            controller: EndpointController::new_with_seed(
+                endpoint.config,
+                start,
+                config.seed.wrapping_add(endpoint_index as u64),
+            ),
             pending: VecDeque::new(),
             service_time: endpoint.service_time,
             dispatched: 0,

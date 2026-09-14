@@ -28,7 +28,7 @@ pub use controller::{
 pub use gcra::Gcra;
 pub use gradient::{Gradient2, Gradient2Config};
 pub use latency::{LatencyEstimator, LatencyEstimatorConfig};
-pub use probe::{Probe, ProbeKind, ProbeSchedule, ProbeState};
+pub use probe::{Probe, ProbeKind, ProbeSchedule};
 pub use simulator::{
     EndpointReport, SimulatedEndpoint, SimulationConfig, SimulationReport, simulate,
 };

@@ -1,6 +1,7 @@
 //! Behavioral acceptance tests for multi-client fairness and endpoint churn.
 //!
-//! The harness uses seeded time-based probes and a worker-pooled server model.
+//! The harness uses seeded controller-owned probes and a worker-pooled server
+//! model.
 //! Each scenario is an executable behavioral assertion about eventual work
 //! sharing rather than a production benchmark.
 
@@ -35,7 +36,6 @@ struct ClientRuntime {
     next_arrival: Option<Instant>,
     controllers: Vec<EndpointController>,
     pending: Vec<VecDeque<DispatchReservation>>,
-    probe_rng: StdRng,
     measurement_completed: u64,
 }
 
@@ -70,6 +70,7 @@ fn config(initial_rtt: Duration) -> EndpointConfig {
             min_rtt: initial_rtt,
             baseline_window: Duration::from_secs(60),
         },
+        probe_schedule: fairness_probe_schedule(),
         ..EndpointConfig::default()
     }
 }
@@ -96,7 +97,6 @@ fn run(
             measurement_completed: 0,
         })
         .collect();
-    let probe_schedule = fairness_probe_schedule();
     let mut runtimes: Vec<_> = clients
         .into_iter()
         .enumerate()
@@ -113,16 +113,16 @@ fn run(
                 controllers: initial_servers
                     .iter()
                     .map(|server| {
-                        EndpointController::new(
+                        EndpointController::new_with_seed(
                             endpoint_config(&client.config, server.service_time),
                             start.max(join_at),
+                            1000 + client_index as u64,
                         )
                     })
                     .collect(),
                 pending: (0..initial_servers.len())
                     .map(|_| VecDeque::new())
                     .collect(),
-                probe_rng: StdRng::seed_from_u64(1000 + client_index as u64),
                 measurement_completed: 0,
             }
         })
@@ -188,10 +188,11 @@ fn run(
                 service_time: server.service_time,
                 measurement_completed: 0,
             });
-            for client in &mut runtimes {
-                client.controllers.push(EndpointController::new(
+            for (client_index, client) in runtimes.iter_mut().enumerate() {
+                client.controllers.push(EndpointController::new_with_seed(
                     endpoint_config(&client.config, server.service_time),
                     now,
+                    1000 + client_index as u64,
                 ));
                 client.pending.push(VecDeque::new());
             }
@@ -241,7 +242,6 @@ fn run(
 
             for controller in &mut client.controllers {
                 controller.refresh(now);
-                controller.maybe_start_probe(&probe_schedule, &mut client.probe_rng, now);
             }
 
             let candidates: Vec<_> = client
