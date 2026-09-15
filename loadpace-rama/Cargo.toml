@@ -2,7 +2,7 @@
 name = "loadpace-rama"
 version = "0.1.0-rc.2"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.96"
 description = "Rama adapter for adaptive client-side load balancing and backpressure"
 license = "MIT OR Apache-2.0"
 readme = "README.md"

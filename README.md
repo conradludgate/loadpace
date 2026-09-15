@@ -76,7 +76,9 @@ Understand the design and the reasoning behind it:
 
 ## Install
 
-Loadpace targets the Rust 2024 Edition and requires Rust 1.85 or newer.
+Loadpace targets the Rust 2024 Edition. The runtime-independent core and Tower
+adapter require Rust 1.85 or newer. The Rama adapter requires Rust 1.96 or
+newer, matching Rama 0.4's MSRV.
 
 The core controller and simulator have no async-runtime or framework
 dependency:

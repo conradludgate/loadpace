@@ -2,8 +2,9 @@
 
 ## Repository shape
 
-This is a Cargo workspace targeting Rust 2024 and Rust 1.85 or newer. The
-workspace contains:
+This is a Cargo workspace targeting Rust 2024. The core and Tower crates
+support Rust 1.85 or newer; the Rama adapter requires Rust 1.96 or newer to
+match Rama 0.4's MSRV. The workspace contains:
 
 - `loadpace`: runtime-independent controller, GCRA pacer, RTT estimator,
   probes, and deterministic simulator;
