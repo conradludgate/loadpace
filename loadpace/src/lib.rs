@@ -39,8 +39,6 @@ pub use simulator::{
 pub enum ScheduleError {
     /// The endpoint's bounded scheduling horizon is full.
     QueueFull,
-    /// The emergency inflight safety cap is full.
-    InflightLimit,
     /// The controller exhausted its request identity space.
     IdExhausted,
 }
