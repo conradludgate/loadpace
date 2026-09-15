@@ -43,6 +43,18 @@ fn gcra_rate_changes_scale_remaining_phase() {
 }
 
 #[test]
+fn gcra_ignores_an_unchanged_quantized_rate() {
+    let now = at_zero();
+    let mut gcra = Gcra::new(3.0, now);
+    gcra.commit(now);
+    let tat = gcra.tat();
+
+    gcra.set_rate(gcra.rate(), now + Duration::from_nanos(1));
+
+    assert_eq!(gcra.tat(), tat);
+}
+
+#[test]
 #[should_panic(expected = "GCRA rate is too low")]
 fn gcra_rejects_an_unrepresentable_interval() {
     Gcra::new(1e-30, at_zero());
@@ -290,6 +302,36 @@ fn controller_drives_probes_when_demand_waits() {
         .expect("the first request should dispatch immediately");
     controller.reserve(now).unwrap();
     controller.refresh(now);
+
+    assert_eq!(
+        controller.active_probe().map(|probe| probe.kind),
+        Some(ProbeKind::Positive { delta: 1.0 })
+    );
+}
+
+#[test]
+fn controller_load_refreshes_time_driven_policy() {
+    let now = at_zero();
+    let config = EndpointConfig {
+        probe_schedule: ProbeSchedule {
+            positive_probability: 1.0,
+            negative_probability: 0.0,
+            ..ProbeSchedule::default()
+        },
+        ..EndpointConfig::default()
+    };
+    let mut controller = EndpointController::new_with_seed(config, now, 5);
+    let reservation = controller.reserve(now).unwrap();
+    let request = controller.on_dispatched(reservation, now).unwrap();
+    assert!(controller.on_complete(
+        request,
+        Outcome::Success,
+        Duration::from_millis(50),
+        now + Duration::from_millis(50),
+    ));
+    assert_eq!(controller.active_probe(), None);
+
+    let _ = controller.load(now + Duration::from_millis(50));
 
     assert_eq!(
         controller.active_probe().map(|probe| probe.kind),

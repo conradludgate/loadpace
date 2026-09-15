@@ -126,7 +126,6 @@ impl<S> AdaptiveEndpoint<S> {
     pub fn load_metric(&self) -> LoadMetric {
         self.with_controller(|controller| {
             let current = now();
-            controller.refresh(current);
             LoadMetric(controller.load(current))
         })
     }

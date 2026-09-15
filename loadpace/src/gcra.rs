@@ -49,6 +49,9 @@ impl Gcra {
     /// to represent as a [`Duration`].
     pub fn set_rate(&mut self, rate_per_second: f64, now: Instant) {
         let interval = rate_to_interval(rate_per_second);
+        if interval == self.interval {
+            return;
+        }
         let phase =
             self.tat.saturating_duration_since(now).as_secs_f64() / self.interval.as_secs_f64();
         self.interval = interval;

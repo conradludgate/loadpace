@@ -437,13 +437,14 @@ impl EndpointController {
 
     /// Predicts when one additional request would complete if current
     /// conditions remain stable.
-    pub fn predicted_completion(&self, now: Instant) -> Instant {
+    pub fn predicted_completion(&mut self, now: Instant) -> Instant {
+        self.refresh(now);
         let dispatch = self.next_virtual_slot(now);
         saturating_add(dispatch, self.latency.expected_rtt())
     }
 
     /// Returns a scalar suitable for comparing endpoints. Lower is better.
-    pub fn load(&self, now: Instant) -> f64 {
+    pub fn load(&mut self, now: Instant) -> f64 {
         self.predicted_completion(now)
             .saturating_duration_since(now)
             .as_secs_f64()
@@ -508,8 +509,16 @@ impl EndpointController {
         let target = self.gradient.concurrency();
         let effective = self.probe.effective_concurrency(target, now);
         let rate = effective / self.latency.expected_rtt().as_secs_f64();
+        let previous_interval = self.pacer.interval();
         self.pacer.set_rate(rate, now);
-        self.rebuild_virtual_queue(now);
+        let next = self.pacer.next_at(now);
+        let virtual_head_expired = self
+            .pending
+            .front()
+            .is_some_and(|entry| entry.scheduled_at < next);
+        if self.pacer.interval() != previous_interval || virtual_head_expired {
+            self.rebuild_virtual_queue(now);
+        }
     }
 
     fn rebuild_virtual_queue(&mut self, now: Instant) {

@@ -596,8 +596,6 @@ fn reserve_p2c(
 
     let lower_probe = lower_controller.active_probe();
     let upper_probe = upper_controller.active_probe();
-    lower_controller.refresh(current);
-    upper_controller.refresh(current);
     let lower_load = lower_controller.load(current);
     let upper_load = upper_controller.load(current);
 
