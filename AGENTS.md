@@ -47,6 +47,16 @@ When a formatter or test exposes an issue, fix it before making the commit.
 For controller changes, add deterministic tests and run the simulator or
 fairness scenarios that exercise the affected behavior.
 
+CI reports line coverage for the core crate and enforces a 95% floor. When
+changing core behavior, inspect it locally with:
+
+```text
+cargo llvm-cov -p loadpace --all-targets --summary-only --fail-under-lines 95
+```
+
+Use coverage to find missing behavior checks; do not add brittle tests solely
+to execute unreachable defensive branches.
+
 ## Git workflow
 
 Inspect `git status` before editing and preserve unrelated user changes. Make
