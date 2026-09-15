@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0-rc.4](https://github.com/conradludgate/loadpace/compare/loadpace-tower-v0.1.0-rc.3...loadpace-tower-v0.1.0-rc.4) - 2026-09-15
+
+### Added
+
+- *(tower)* support pinned discovery streams
+
+### Fixed
+
+- *(tower)* preserve discovery docs with pin projection
+
+### Other
+
+- define trusted deployment boundary
+- *(adapters)* clarify API and deployment scope
+- *(tower)* configure positive probe rate
+- *(controller)* own load refresh sequencing
+- *(tower)* make endpoints single-owner
+- *(tower)* tighten admission state
+- *(tower)* clarify adaptive request lifecycle
+- *(adapters)* hide probe controls
+- *(adapters)* clarify dispatch lifecycle
+- *(tower)* use PollSemaphore for readiness
+- *(adapters)* make internal state explicit
+- *(adapters)* model request lifecycle explicitly
+
 ### Added
 
 - Add `AdaptiveLayer` for normal Tower layer stacks.

@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0-rc.3](https://github.com/conradludgate/loadpace/compare/loadpace-rama-v0.1.0-rc.2...loadpace-rama-v0.1.0-rc.3) - 2026-09-15
+
+### Added
+
+- *(rama)* add adaptive DNS p2c balancing
+
+### Fixed
+
+- *(rama)* declare dependency MSRV
+
+### Other
+
+- *(core)* detail controller method contracts
+- define trusted deployment boundary
+- *(adapters)* clarify API and deployment scope
+- *(rama)* satisfy current clippy
+- *(controller)* own load refresh sequencing
+- delegate changelogs to release-plz
+- *(controller)* own dispatch transition timing
+- *(adapters)* hide probe controls
+- *(adapters)* clarify dispatch lifecycle
+- *(adapters)* make internal state explicit
+- *(adapters)* model request lifecycle explicitly
+
 ## [0.1.0-rc.2](https://github.com/conradludgate/loadpace/releases/tag/loadpace-rama-v0.1.0-rc.2) - 2026-09-14
 
 ### Added
