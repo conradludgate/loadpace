@@ -200,6 +200,10 @@ impl EndpointController {
     ///
     /// This is useful for simulations and tests. The controller still owns
     /// all probe decisions; the seed only makes those decisions reproducible.
+    ///
+    /// # Panics
+    ///
+    /// Panics under the same invalid configurations as [`Self::new`].
     pub fn new_with_seed(config: EndpointConfig, now: Instant, seed: u64) -> Self {
         Self::new_with_rng(config, now, StdRng::seed_from_u64(seed))
     }
@@ -273,6 +277,16 @@ impl EndpointController {
 
     /// Reserves one bounded scheduling slot and appends it to the virtual
     /// pacing queue.
+    ///
+    /// A successful reservation must later be passed to [`Self::on_dispatched`]
+    /// or [`Self::cancel`]. Reservations belong to the controller that created
+    /// them and are dispatched FIFO.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ScheduleError::QueueFull`] when the scheduling horizon is
+    /// full, or [`ScheduleError::IdExhausted`] if the controller cannot assign
+    /// another reservation identity.
     pub fn reserve(&mut self, now: Instant) -> Result<DispatchReservation, ScheduleError> {
         if !self.may_schedule() {
             return Err(ScheduleError::QueueFull);
@@ -303,6 +317,9 @@ impl EndpointController {
     /// Cancellation is safe even when an earlier request remains queued: the
     /// virtual tail is rebuilt from the committed TAT, so a cancelled hole
     /// cannot permanently throttle the endpoint.
+    ///
+    /// Returns `true` when the reservation was removed. Returns `false` when
+    /// it belongs to another controller or is no longer queued.
     pub fn cancel(&mut self, reservation: DispatchReservation, now: Instant) -> bool {
         if reservation.controller_id != self.controller_id {
             return false;
@@ -373,6 +390,13 @@ impl EndpointController {
     /// readiness. Dispatches are intentionally FIFO inside one endpoint.
     /// Returns the reservation's current state without changing it when it is
     /// not dispatchable.
+    ///
+    /// # Errors
+    ///
+    /// Returns the current [`DispatchState`] unless the reservation is
+    /// [`DispatchState::Ready`]. In particular, callers must not treat an
+    /// earlier pacing decision as a permanent readiness grant because
+    /// time-driven controller state may have changed.
     pub fn on_dispatched(
         &mut self,
         reservation: DispatchReservation,
@@ -400,6 +424,14 @@ impl EndpointController {
     }
 
     /// Records a response and updates the endpoint's operating point.
+    ///
+    /// `latency` must measure actual dispatch to completion and exclude time
+    /// spent in local admission, pacing, or service-readiness waits. Successful
+    /// outcomes update the RTT estimator; failures reduce the operating point
+    /// without treating a fast error as healthy latency.
+    ///
+    /// Returns `false` without changing state when `request` belongs to another
+    /// controller. Returns `true` after consuming a request owned by this one.
     pub fn on_complete(
         &mut self,
         request: InFlightRequest,
@@ -451,6 +483,9 @@ impl EndpointController {
 
     /// Expires probes, lets the controller make a probe decision, and
     /// refreshes the derived pacing rate.
+    ///
+    /// Framework adapters should call this through ordinary dispatch or load
+    /// operations rather than running a separate application probe task.
     pub fn refresh(&mut self, now: Instant) {
         // Refresh is called by normal dispatch and load-metric paths. Once an
         // endpoint has produced a sample, keeping the schedule here means an
@@ -473,6 +508,9 @@ impl EndpointController {
 
     /// Predicts when one additional request would complete if current
     /// conditions remain stable.
+    ///
+    /// The prediction includes the virtual queue tail and expected endpoint
+    /// RTT. Reading it refreshes time-driven probe state.
     pub fn predicted_completion(&mut self, now: Instant) -> Instant {
         self.refresh(now);
         let dispatch = self.next_virtual_slot(now);
@@ -480,6 +518,8 @@ impl EndpointController {
     }
 
     /// Returns a scalar suitable for comparing endpoints. Lower is better.
+    ///
+    /// The value is the predicted completion delay in seconds from `now`.
     pub fn load(&mut self, now: Instant) -> f64 {
         self.predicted_completion(now)
             .saturating_duration_since(now)

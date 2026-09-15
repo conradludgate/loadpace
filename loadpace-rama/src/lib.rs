@@ -174,6 +174,10 @@ pub struct AdaptiveEndpoint<S> {
 
 impl<S> AdaptiveEndpoint<S> {
     /// Wraps a Rama service using the current Tokio runtime time.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `config` contains invalid controller settings.
     pub fn new(inner: S, config: EndpointConfig) -> Self {
         Self::new_at(inner, config, now())
     }
@@ -181,6 +185,10 @@ impl<S> AdaptiveEndpoint<S> {
     /// Wraps a Rama service using an explicit controller start time.
     ///
     /// This is useful for deterministic simulations and tests.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `config` contains invalid controller settings.
     pub fn new_at(inner: S, config: EndpointConfig, now: Instant) -> Self {
         Self {
             shared: Arc::new(Shared {
@@ -204,11 +212,17 @@ impl<S> AdaptiveEndpoint<S> {
     }
 
     /// Returns a current snapshot of this endpoint's controller.
+    ///
+    /// Reading a snapshot refreshes time-driven probe state and may update the
+    /// effective pacing rate shared by all endpoint clones.
     pub fn snapshot(&self) -> ControllerSnapshot {
         self.with_controller(|controller| controller.snapshot(now()))
     }
 
     /// Returns the endpoint's predicted completion cost for load balancing.
+    ///
+    /// Lower values are preferred. Reading the metric refreshes time-driven
+    /// controller state, including probes.
     pub fn load_metric(&self) -> LoadMetric {
         self.with_controller(|controller| {
             let current = now();
