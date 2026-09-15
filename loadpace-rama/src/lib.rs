@@ -16,6 +16,9 @@
 
 #![forbid(unsafe_code)]
 
+#[cfg(feature = "dns")]
+pub mod dns;
+
 use loadpace::{
     ControllerSnapshot, DispatchReservation, DispatchState, EndpointConfig, EndpointController,
     InFlightRequest, Outcome, ScheduleError,
@@ -94,19 +97,42 @@ impl<E: Error + 'static> Error for ServiceError<E> {
 }
 
 struct Shared<S> {
-    inner: Arc<S>,
+    inner: S,
+    endpoint: EndpointState,
+}
+
+pub(crate) struct EndpointState {
     controller: Mutex<EndpointController>,
     dispatch: Notify,
+}
+
+impl EndpointState {
+    pub(crate) fn new(config: EndpointConfig, now: Instant) -> Self {
+        Self {
+            controller: Mutex::new(EndpointController::new(config, now)),
+            dispatch: Notify::new(),
+        }
+    }
+}
+
+pub(crate) trait EndpointOwner: Send + Sync + 'static {
+    fn endpoint_state(&self) -> &EndpointState;
+}
+
+impl<S: Send + Sync + 'static> EndpointOwner for Shared<S> {
+    fn endpoint_state(&self) -> &EndpointState {
+        &self.endpoint
+    }
 }
 
 // Core deliberately uses `std::time::Instant`; Rama waits use Tokio's
 // runtime clock. Converting here keeps controller deadlines and Tokio timers
 // in the same clock domain, including when Tokio time is paused in tests.
-fn now() -> Instant {
+pub(crate) fn now() -> Instant {
     tokio::time::Instant::now().into_std()
 }
 
-fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+pub(crate) fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex
         .lock()
         .expect("loadpace-rama internal mutex was poisoned")
@@ -114,8 +140,9 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 
 /// A Rama service with per-endpoint adaptive pacing and bounded admission.
 ///
-/// The wrapped service is shared through an [`Arc`], so concurrent requests
-/// can be served when the inner service supports concurrent `serve` calls.
+/// The wrapped service and controller are held in one shared allocation, so
+/// concurrent requests can call the inner service when it supports concurrent
+/// `serve` calls.
 /// Requests wait in a bounded virtual scheduling horizon; dropping a returned
 /// future cancels its reservation, or records a failure if it was dispatched.
 pub struct AdaptiveEndpoint<S> {
@@ -134,22 +161,21 @@ impl<S> AdaptiveEndpoint<S> {
     pub fn new_at(inner: S, config: EndpointConfig, now: Instant) -> Self {
         Self {
             shared: Arc::new(Shared {
-                inner: Arc::new(inner),
-                controller: Mutex::new(EndpointController::new(config, now)),
-                dispatch: Notify::new(),
+                inner,
+                endpoint: EndpointState::new(config, now),
             }),
         }
     }
 
     fn with_controller<T>(&self, operation: impl FnOnce(&mut EndpointController) -> T) -> T {
         let (result, changed) = {
-            let mut controller = lock(&self.shared.controller);
+            let mut controller = lock(&self.shared.endpoint.controller);
             let before = controller.active_probe();
             let result = operation(&mut controller);
             (result, before != controller.active_probe())
         };
         if changed {
-            self.shared.dispatch.notify_waiters();
+            self.shared.endpoint.dispatch.notify_waiters();
         }
         result
     }
@@ -191,7 +217,7 @@ where
         &self,
         request: Request,
     ) -> impl Future<Output = Result<Self::Output, Self::Error>> + Send {
-        let reservation = lock(&self.shared.controller).reserve(now());
+        let reservation = lock(&self.shared.endpoint.controller).reserve(now());
 
         match reservation {
             Ok(reservation) => {
@@ -248,51 +274,52 @@ enum RequestState {
     Finished,
 }
 
-struct RequestGuard<S> {
-    shared: Arc<Shared<S>>,
+pub(crate) struct RequestGuard<O: EndpointOwner> {
+    owner: Arc<O>,
     state: RequestState,
 }
 
-impl<S> RequestGuard<S> {
-    fn new(shared: Arc<Shared<S>>, reservation: DispatchReservation) -> Self {
+impl<O: EndpointOwner> RequestGuard<O> {
+    pub(crate) fn new(owner: Arc<O>, reservation: DispatchReservation) -> Self {
         Self {
-            shared,
+            owner,
             state: RequestState::Reserved(reservation),
         }
     }
 
-    fn mark_dispatched(&mut self, active: InFlightRequest) {
+    pub(crate) fn mark_dispatched(&mut self, active: InFlightRequest) {
         self.state = RequestState::Dispatched(active);
     }
 
-    fn finish(&mut self, outcome: Outcome, now: Instant) {
+    pub(crate) fn finish(&mut self, outcome: Outcome, now: Instant) {
+        let endpoint = self.owner.endpoint_state();
         match std::mem::replace(&mut self.state, RequestState::Finished) {
             RequestState::Dispatched(active) => {
                 let latency = now.saturating_duration_since(active.dispatched_at());
-                lock(&self.shared.controller).on_complete(active, outcome, latency, now);
+                lock(&endpoint.controller).on_complete(active, outcome, latency, now);
             }
             RequestState::Reserved(reservation) => {
-                lock(&self.shared.controller).cancel(reservation, now);
+                lock(&endpoint.controller).cancel(reservation, now);
             }
             RequestState::Finished => return,
         }
-        self.shared.dispatch.notify_waiters();
+        endpoint.dispatch.notify_waiters();
     }
 }
 
-impl<S> Drop for RequestGuard<S> {
+impl<O: EndpointOwner> Drop for RequestGuard<O> {
     fn drop(&mut self) {
         self.finish(Outcome::Failure, now());
     }
 }
 
-fn dispatch_state<S>(
-    shared: &Shared<S>,
+fn dispatch_state(
+    endpoint: &EndpointState,
     reservation: DispatchReservation,
     current: Instant,
 ) -> DispatchState {
     let (state, probe_changed) = {
-        let mut controller = lock(&shared.controller);
+        let mut controller = lock(&endpoint.controller);
         let previous_probe = controller.active_probe();
         let state = controller.dispatch_state(reservation, current);
         (state, previous_probe != controller.active_probe())
@@ -301,21 +328,21 @@ fn dispatch_state<S>(
     // Wake waiters after releasing the controller lock so they observe the
     // complete state transition when they re-check their reservations.
     if probe_changed {
-        shared.dispatch.notify_waiters();
+        endpoint.dispatch.notify_waiters();
     }
     state
 }
 
-async fn wait_for_dispatch<S>(shared: &Shared<S>, reservation: DispatchReservation) {
+pub(crate) async fn wait_for_dispatch(endpoint: &EndpointState, reservation: DispatchReservation) {
     loop {
-        let notified = shared.dispatch.notified();
+        let notified = endpoint.dispatch.notified();
         let mut notified = std::pin::pin!(notified);
         // Register before inspecting controller state. Otherwise a
         // notification between the state check and the first poll could be
         // lost, leaving this request asleep indefinitely.
         notified.as_mut().enable();
 
-        match dispatch_state(shared, reservation, now()) {
+        match dispatch_state(endpoint, reservation, now()) {
             DispatchState::Ready => return,
             DispatchState::WaitUntil(deadline) => {
                 let delay = deadline.saturating_duration_since(now());
@@ -331,11 +358,26 @@ async fn wait_for_dispatch<S>(shared: &Shared<S>, reservation: DispatchReservati
     }
 }
 
+pub(crate) async fn begin_dispatch(
+    endpoint: &EndpointState,
+    reservation: DispatchReservation,
+) -> InFlightRequest {
+    loop {
+        wait_for_dispatch(endpoint, reservation).await;
+        let dispatch = lock(&endpoint.controller).on_dispatched(reservation, now());
+        if let Ok(active) = dispatch {
+            // Removing the FIFO head can make the next reservation eligible.
+            endpoint.dispatch.notify_waiters();
+            return active;
+        }
+    }
+}
+
 async fn dispatch_request<S, Request>(
     shared: Arc<Shared<S>>,
     request: Request,
     reservation: DispatchReservation,
-    mut guard: RequestGuard<S>,
+    mut guard: RequestGuard<Shared<S>>,
 ) -> Result<S::Output, ServiceError<S::Error>>
 where
     S: Service<Request> + Send + Sync + 'static,
@@ -343,21 +385,8 @@ where
     S::Error: Send + 'static,
     Request: Send + 'static,
 {
-    let active = loop {
-        wait_for_dispatch(&shared, reservation).await;
-        let dispatch = {
-            let mut controller = lock(&shared.controller);
-            controller.on_dispatched(reservation, now())
-        };
-        if let Ok(active) = dispatch {
-            break active;
-        }
-    };
+    let active = begin_dispatch(&shared.endpoint, reservation).await;
     guard.mark_dispatched(active);
-    // Removing the FIFO head can make the next reservation eligible. Wake it
-    // even when its old timer has not elapsed because the committed TAT may
-    // have changed its effective deadline.
-    shared.dispatch.notify_waiters();
 
     let result = shared
         .inner

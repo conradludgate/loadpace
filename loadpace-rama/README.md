@@ -21,7 +21,7 @@ Tower integration while fitting Rama's direct `serve` model.
 ```toml
 [dependencies]
 loadpace = "0.1"
-loadpace-rama = "0.1"
+loadpace-rama = { version = "0.1", features = ["dns"] }
 rama = "0.4"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
 ```
@@ -70,6 +70,41 @@ use loadpace_rama::AdaptiveLayer;
 
 let endpoint = AdaptiveLayer::new(EndpointConfig::default()).layer(inner);
 ```
+
+## Adaptive DNS balancing
+
+Enable the `dns` feature to put adaptive endpoint discovery directly in front
+of a Rama connector:
+
+```rust,no_run
+use loadpace_rama::dns::{AdaptiveDnsConfig, AdaptiveDnsLayer};
+use rama::Layer;
+
+# let connector = rama::service::service_fn(|request: rama::net::client::ConnectRequest| async move {
+#     Ok::<_, std::convert::Infallible>(request)
+# });
+let connector = AdaptiveDnsLayer::new(AdaptiveDnsConfig::new()).layer(connector);
+```
+
+The layer belongs immediately outside the connector (or connector stack) that
+consumes Rama's `ConnectorTarget`. For a hostname request it resolves and
+caches the address set, samples two distinct endpoints, and compares their
+current Loadpace load. It reserves admission on the preferred endpoint while
+both sampled controller locks are still held; if that endpoint rejects, it
+tries the alternate before releasing the locks. Selection and admission are
+therefore one atomic P2C decision rather than a DNS picker followed by a
+separate reservation race.
+
+The selected concrete IP is written only to Rama's connector-target extension.
+The request's original authority remains unchanged, preserving TLS SNI and HTTP
+host behavior.
+
+Adaptive state is identified by `(hostname, port, IP)`. Cached results refresh
+in the background after 30 seconds, retain surviving endpoint controllers, and
+discard removed addresses from new selections. Entries idle for 300 seconds or
+without a successful refresh for 300 seconds are evicted; the cache is bounded
+to 1024 host/port entries by default. These policies and the per-endpoint
+`EndpointConfig` are configurable through `AdaptiveDnsConfig`.
 
 This crate is experimental. See the [Loadpace repository](https://github.com/conradludgate/loadpace)
 for the design and current documentation.
