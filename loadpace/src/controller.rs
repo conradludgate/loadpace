@@ -5,7 +5,7 @@ use crate::latency::{LatencyEstimator, LatencyEstimatorConfig};
 use crate::probe::{Probe, ProbeSchedule, ProbeState};
 use rand::SeedableRng;
 use rand::rngs::StdRng;
-use std::collections::{HashSet, VecDeque};
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
@@ -72,7 +72,6 @@ pub struct DispatchReservation {
 #[derive(Debug, PartialEq, Eq)]
 pub struct InFlightRequest {
     controller_id: u64,
-    id: u64,
     dispatched_at: Instant,
     was_paced: bool,
 }
@@ -147,9 +146,7 @@ pub struct EndpointController {
     pacer: Gcra,
     probe: ProbeState,
     pending: VecDeque<PendingReservation>,
-    active_requests: HashSet<u64>,
     next_id: u64,
-    queued: usize,
     inflight: usize,
     completed: u64,
     failures: u64,
@@ -196,9 +193,7 @@ impl EndpointController {
             pacer: Gcra::new(rate, now),
             probe: ProbeState::new(),
             pending: VecDeque::new(),
-            active_requests: HashSet::new(),
             next_id: 0,
-            queued: 0,
             inflight: 0,
             completed: 0,
             failures: 0,
@@ -223,7 +218,7 @@ impl EndpointController {
     }
 
     pub fn queued(&self) -> usize {
-        self.queued
+        self.pending.len()
     }
 
     pub fn inflight(&self) -> usize {
@@ -231,7 +226,7 @@ impl EndpointController {
     }
 
     pub fn may_schedule(&self) -> bool {
-        self.queued < self.config.queue_capacity
+        self.pending.len() < self.config.queue_capacity
     }
 
     /// Reserves one bounded scheduling slot and appends it to the virtual
@@ -255,8 +250,6 @@ impl EndpointController {
             // this one reaches the head of the queue.
             was_paced: false,
         });
-        self.queued += 1;
-
         Ok(DispatchReservation {
             controller_id: self.controller_id,
             id,
@@ -282,7 +275,6 @@ impl EndpointController {
         };
 
         self.pending.remove(position);
-        self.queued -= 1;
         self.rebuild_virtual_queue(now);
         true
     }
@@ -348,15 +340,12 @@ impl EndpointController {
             .pop_front()
             .expect("ready reservation must be at the front of the queue");
         debug_assert_eq!(pending.id, reservation.id);
-        self.queued -= 1;
         self.inflight += 1;
-        debug_assert!(self.active_requests.insert(reservation.id));
         self.pacer.commit(now);
         self.rebuild_virtual_queue(now);
 
         Ok(InFlightRequest {
             controller_id: self.controller_id,
-            id: reservation.id,
             dispatched_at: now,
             was_paced: pending.was_paced,
         })
@@ -370,12 +359,11 @@ impl EndpointController {
         latency: Duration,
         now: Instant,
     ) -> bool {
-        if request.controller_id != self.controller_id || !self.active_requests.remove(&request.id)
-        {
+        if request.controller_id != self.controller_id {
             return false;
         }
 
-        debug_assert_eq!(self.inflight, self.active_requests.len() + 1);
+        debug_assert!(self.inflight > 0);
         self.completed += 1;
 
         match outcome {
@@ -421,7 +409,7 @@ impl EndpointController {
         // endpoint that P2C is beginning to avoid can still receive a probe.
         // Before that first observation, require an actual queued dispatch so
         // the initial request is not treated as a probe opportunity.
-        if self.latency.samples() > 0 || (self.inflight > 0 && self.queued > 0) {
+        if self.latency.samples() > 0 || (self.inflight > 0 && !self.pending.is_empty()) {
             self.config
                 .probe_schedule
                 .maybe_start(&mut self.probe, &mut self.probe_rng, now);
@@ -472,7 +460,7 @@ impl EndpointController {
                 .pending
                 .back()
                 .map(|entry| saturating_add(entry.scheduled_at, self.pacer.interval())),
-            queued: self.queued,
+            queued: self.pending.len(),
             inflight: self.inflight,
             queue_capacity: self.config.queue_capacity,
             max_inflight: self.config.max_inflight,
@@ -497,7 +485,7 @@ impl EndpointController {
         }
 
         let probing_has_demand =
-            self.latency.samples() > 0 || (self.inflight > 0 && self.queued > 0);
+            self.latency.samples() > 0 || (self.inflight > 0 && !self.pending.is_empty());
         if probing_has_demand {
             self.probe.next_probe_at()
         } else {
