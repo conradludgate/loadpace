@@ -67,9 +67,11 @@ from application-limited samples.
 ## Tune probes only when needed
 
 Probes are temporary controller-owned perturbations: positive probes add a
-fixed amount to the base operating point, while negative probes multiply it by
-a factor below one. They help independent clients escape an unfair equilibrium
-without permanently assigning capacity.
+fixed request rate, while negative probes multiply the base rate by a factor
+below one. Expressing positive probes in requests per second gives clients the
+same exploration opportunity even when their network RTTs differ. The probes
+help independent clients escape an unfair equilibrium without permanently
+assigning capacity.
 
 The controller automatically considers the configured schedule as normal
 dispatch and load-selection operations refresh endpoint state. The adapters

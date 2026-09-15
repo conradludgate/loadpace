@@ -117,12 +117,13 @@ selection.
 Independent clients can settle into a stable but unfair allocation. Loadpace
 provides temporary randomized perturbations:
 
-- positive probes are additive (`8 → 9`, `1 → 2`);
-- negative probes are multiplicative (`8 → 6.4`, `1 → 0.8`).
+- positive probes add a fixed request rate;
+- negative probes multiply the current request rate.
 
-The asymmetry gives a small client a meaningful opportunity to grow while
-causing a dominant client to yield more absolute capacity. A probe does not
-permanently assign ownership; normal feedback decides what remains sustainable.
+The asymmetry gives every client the same absolute opportunity to explore,
+regardless of its network RTT, while causing a dominant client to yield more
+absolute capacity. A probe does not permanently assign ownership; normal
+feedback decides what remains sustainable.
 
 `ProbeSchedule` schedules the next decision from a randomized time interval
 rather than from a probability per request. The controller owns the random

@@ -369,7 +369,7 @@ fn fairness_probe_schedule() -> loadpace::ProbeSchedule {
     loadpace::ProbeSchedule {
         positive_probability: 0.5,
         negative_probability: 0.5,
-        positive_delta: 1.0,
+        positive_rate_delta: 20.0,
         negative_factor: 0.8,
         duration: Duration::from_millis(250),
         min_interval: Duration::from_millis(500),

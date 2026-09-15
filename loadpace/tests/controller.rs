@@ -321,7 +321,7 @@ fn controller_drives_probes_when_demand_waits() {
         probe_schedule: ProbeSchedule {
             positive_probability: 1.0,
             negative_probability: 0.0,
-            positive_delta: 1.0,
+            positive_rate_delta: 20.0,
             ..ProbeSchedule::default()
         },
         ..EndpointConfig::default()
@@ -337,7 +337,7 @@ fn controller_drives_probes_when_demand_waits() {
 
     assert_eq!(
         controller.active_probe().map(|probe| probe.kind),
-        Some(ProbeKind::Positive { delta: 1.0 })
+        Some(ProbeKind::Positive { delta_rate: 20.0 })
     );
 }
 
@@ -367,8 +367,42 @@ fn controller_load_refreshes_time_driven_policy() {
 
     assert_eq!(
         controller.active_probe().map(|probe| probe.kind),
-        Some(ProbeKind::Positive { delta: 1.0 })
+        Some(ProbeKind::Positive { delta_rate: 20.0 })
     );
+}
+
+#[test]
+fn positive_probe_adds_the_same_rate_across_rtts() {
+    fn probe_delta(initial_rtt: Duration) -> f64 {
+        let now = at_zero();
+        let config = EndpointConfig {
+            latency: LatencyEstimatorConfig {
+                initial_rtt,
+                min_rtt: initial_rtt,
+                ..LatencyEstimatorConfig::default()
+            },
+            probe_schedule: ProbeSchedule {
+                positive_probability: 1.0,
+                negative_probability: 0.0,
+                positive_rate_delta: 20.0,
+                ..ProbeSchedule::default()
+            },
+            ..EndpointConfig::default()
+        };
+        let mut controller = EndpointController::new_with_seed(config, now, 5);
+        let reservation = controller.reserve(now).unwrap();
+        let request = controller.on_dispatched(reservation, now).unwrap();
+        let completed_at = now + initial_rtt;
+        assert!(controller.on_complete(request, Outcome::Success, initial_rtt, completed_at,));
+
+        let snapshot = controller.snapshot(completed_at);
+        snapshot.effective_rate - snapshot.base_rate
+    }
+
+    let short_rtt_delta = probe_delta(Duration::from_millis(10));
+    let long_rtt_delta = probe_delta(Duration::from_millis(100));
+    assert!((short_rtt_delta - 20.0).abs() < 1e-9);
+    assert!((long_rtt_delta - 20.0).abs() < 1e-9);
 }
 
 #[test]
@@ -382,6 +416,7 @@ fn dispatch_deadline_includes_controller_probe_transitions() {
         probe_schedule: ProbeSchedule {
             positive_probability: 1.0,
             negative_probability: 0.0,
+            positive_rate_delta: 0.5,
             duration: Duration::from_millis(100),
             min_interval: Duration::from_secs(1),
             max_interval: Duration::from_secs(1),

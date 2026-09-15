@@ -5,9 +5,9 @@ use std::time::{Duration, Instant};
 /// The temporary perturbations supported by Loadpace.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ProbeKind {
-    /// Temporarily add a fixed amount to the base virtual concurrency.
-    Positive { delta: f64 },
-    /// Temporarily multiply the base virtual concurrency.
+    /// Temporarily add a fixed number of requests per second.
+    Positive { delta_rate: f64 },
+    /// Temporarily multiply the base request rate.
     Negative { factor: f64 },
 }
 
@@ -35,27 +35,24 @@ mod tests {
     }
 
     #[test]
-    fn probes_are_additive_positive_and_multiplicative_negative() {
+    fn probes_are_additive_rate_positive_and_multiplicative_negative() {
         let now = at_zero();
         let mut state = ProbeState::new();
 
         state.start_positive(1.0, now + Duration::from_secs(1));
         assert_eq!(
-            state.effective_concurrency(8.0, now),
+            state.effective_rate(8.0, now),
             9.0,
             "positive probes must be additive"
         );
-        assert_eq!(
-            state.effective_concurrency(8.0, now + Duration::from_secs(1)),
-            8.0
-        );
+        assert_eq!(state.effective_rate(8.0, now + Duration::from_secs(1)), 8.0);
 
         state.start_negative(0.8, now + Duration::from_secs(2));
         assert_eq!(
             state.active(now).map(|probe| probe.kind),
             Some(ProbeKind::Negative { factor: 0.8 })
         );
-        assert!((state.effective_concurrency(8.0, now) - 6.4).abs() < f64::EPSILON);
+        assert!((state.effective_rate(8.0, now) - 6.4).abs() < f64::EPSILON);
     }
 
     #[test]
@@ -96,13 +93,13 @@ impl ProbeState {
     /// # Panics
     ///
     /// Panics when `delta` is not finite and strictly positive.
-    fn start_positive(&mut self, delta: f64, until: Instant) {
+    fn start_positive(&mut self, delta_rate: f64, until: Instant) {
         assert!(
-            delta.is_finite() && delta > 0.0,
-            "positive probe delta must be positive"
+            delta_rate.is_finite() && delta_rate > 0.0,
+            "positive probe rate delta must be positive"
         );
         self.active = Some(Probe {
-            kind: ProbeKind::Positive { delta },
+            kind: ProbeKind::Positive { delta_rate },
             until,
         });
     }
@@ -130,10 +127,10 @@ impl ProbeState {
         self.active
     }
 
-    pub(crate) fn effective_concurrency(&mut self, base: f64, now: Instant) -> f64 {
+    pub(crate) fn effective_rate(&mut self, base: f64, now: Instant) -> f64 {
         match self.active(now).map(|probe| probe.kind) {
             None => base,
-            Some(ProbeKind::Positive { delta }) => base + delta,
+            Some(ProbeKind::Positive { delta_rate }) => base + delta_rate,
             Some(ProbeKind::Negative { factor }) => base * factor,
         }
     }
@@ -157,7 +154,7 @@ impl ProbeState {
 pub struct ProbeSchedule {
     pub positive_probability: f64,
     pub negative_probability: f64,
-    pub positive_delta: f64,
+    pub positive_rate_delta: f64,
     pub negative_factor: f64,
     pub duration: Duration,
     pub min_interval: Duration,
@@ -173,7 +170,7 @@ impl Default for ProbeSchedule {
             // keeping probes rare relative to ordinary request traffic.
             positive_probability: 0.10,
             negative_probability: 0.05,
-            positive_delta: 1.0,
+            positive_rate_delta: 20.0,
             negative_factor: 0.8,
             duration: Duration::from_secs(1),
             min_interval: Duration::from_secs(1),
@@ -198,8 +195,8 @@ impl ProbeSchedule {
             "probe probabilities must be finite, non-negative, and sum to at most one"
         );
         assert!(
-            self.positive_delta.is_finite() && self.positive_delta > 0.0,
-            "positive probe delta must be finite and positive"
+            self.positive_rate_delta.is_finite() && self.positive_rate_delta > 0.0,
+            "positive probe rate delta must be finite and positive"
         );
         assert!(
             self.negative_factor.is_finite() && (0.0..1.0).contains(&self.negative_factor),
@@ -235,7 +232,7 @@ impl ProbeSchedule {
         let draw = rng.random::<f64>();
         if draw < self.positive_probability {
             let until = saturating_add(now, self.duration);
-            state.start_positive(self.positive_delta, until);
+            state.start_positive(self.positive_rate_delta, until);
             state.current()
         } else if draw < self.positive_probability + self.negative_probability {
             let until = saturating_add(now, self.duration);

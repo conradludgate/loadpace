@@ -441,10 +441,10 @@ impl EndpointController {
     pub fn snapshot(&mut self, now: Instant) -> ControllerSnapshot {
         self.refresh(now);
         let target = self.gradient.concurrency();
-        let effective = self.probe.effective_concurrency(target, now);
         let expected = self.latency.expected_rtt().as_secs_f64();
         let base_rate = target / expected;
-        let effective_rate = effective / expected;
+        let effective_rate = self.probe.effective_rate(base_rate, now);
+        let effective = effective_rate * expected;
 
         ControllerSnapshot {
             expected_rtt: self.latency.expected_rtt(),
@@ -495,8 +495,8 @@ impl EndpointController {
 
     fn update_rate(&mut self, now: Instant) {
         let target = self.gradient.concurrency();
-        let effective = self.probe.effective_concurrency(target, now);
-        let rate = effective / self.latency.expected_rtt().as_secs_f64();
+        let base_rate = target / self.latency.expected_rtt().as_secs_f64();
+        let rate = self.probe.effective_rate(base_rate, now);
         let previous_interval = self.pacer.interval();
         self.pacer.set_rate(rate, now);
         let next = self.pacer.next_at(now);
