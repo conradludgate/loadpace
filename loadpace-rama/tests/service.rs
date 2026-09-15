@@ -1,4 +1,4 @@
-use loadpace::{EndpointConfig, LatencyEstimatorConfig, ProbeSchedule, ScheduleError};
+use loadpace::{EndpointConfig, ScheduleError};
 use loadpace_rama::{AdaptiveEndpoint, AdaptiveLayer, ServiceError};
 use rama::{Layer, Service};
 use std::future::Future;
@@ -59,23 +59,9 @@ impl Service<u64> for Held {
 }
 
 fn config(queue_capacity: usize, initial_rtt: Duration) -> EndpointConfig {
-    EndpointConfig {
-        queue_capacity,
-        max_inflight: 16,
-        latency: LatencyEstimatorConfig {
-            initial_rtt,
-            short_alpha: 1.0,
-            long_alpha: 1.0,
-            min_rtt: initial_rtt,
-            baseline_window: Duration::from_secs(60),
-        },
-        probe_schedule: ProbeSchedule {
-            positive_probability: 0.0,
-            negative_probability: 0.0,
-            ..ProbeSchedule::default()
-        },
-        ..EndpointConfig::default()
-    }
+    EndpointConfig::new(initial_rtt, 1)
+        .with_queue_capacity(queue_capacity)
+        .with_max_inflight(16)
 }
 
 #[tokio::test(start_paused = true)]
@@ -251,49 +237,4 @@ async fn layer_wraps_a_rama_service() {
     let endpoint = AdaptiveLayer::new(config(2, Duration::from_millis(1))).layer(Echo);
 
     assert_eq!(endpoint.serve(7).await.unwrap(), 7);
-}
-
-#[tokio::test(start_paused = true)]
-async fn queued_demand_drives_automatic_probing() {
-    let started = Arc::new(Notify::new());
-    let release = Arc::new(Notify::new());
-    let starts = Arc::new(AtomicUsize::new(0));
-    let mut endpoint_config = config(2, Duration::from_secs(1));
-    endpoint_config.probe_schedule = ProbeSchedule {
-        positive_probability: 1.0,
-        negative_probability: 0.0,
-        min_interval: Duration::from_secs(1),
-        max_interval: Duration::from_secs(1),
-        duration: Duration::from_millis(100),
-        ..ProbeSchedule::default()
-    };
-    let endpoint = AdaptiveEndpoint::new_at(
-        Held {
-            started: Arc::clone(&started),
-            release: Arc::clone(&release),
-            starts: Arc::clone(&starts),
-        },
-        endpoint_config,
-        Instant::now(),
-    );
-
-    let first_endpoint = endpoint.clone();
-    let first = tokio::spawn(async move { first_endpoint.serve(1).await });
-    started.notified().await;
-    let second_endpoint = endpoint.clone();
-    let second = tokio::spawn(async move { second_endpoint.serve(2).await });
-    tokio::time::advance(Duration::from_secs(1)).await;
-    while endpoint.snapshot().active_probe.is_none() {
-        tokio::task::yield_now().await;
-    }
-
-    assert_eq!(starts.load(Ordering::Relaxed), 2);
-    assert!(matches!(
-        endpoint.snapshot().active_probe.unwrap().kind,
-        loadpace::ProbeKind::Positive { .. }
-    ));
-
-    release.notify_waiters();
-    assert_eq!(first.await.unwrap().unwrap(), 1);
-    assert_eq!(second.await.unwrap().unwrap(), 2);
 }

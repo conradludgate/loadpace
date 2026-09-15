@@ -80,25 +80,21 @@ impl<R: Clone> Clone for AdaptiveDnsConfig<R> {
 }
 
 impl AdaptiveDnsConfig {
-    /// Creates a configuration using Rama's process-global resolver.
+    /// Creates a configuration using Rama's process-global resolver and the
+    /// supplied endpoint assumptions.
     #[must_use]
-    pub fn new() -> Self {
-        Self::with_resolver(GlobalDnsResolver::new())
-    }
-}
-
-impl Default for AdaptiveDnsConfig {
-    fn default() -> Self {
-        Self::new()
+    pub fn new(endpoint: EndpointConfig) -> Self {
+        Self::with_resolver(GlobalDnsResolver::new(), endpoint)
     }
 }
 
 impl<R> AdaptiveDnsConfig<R> {
-    /// Creates a configuration using a custom resolver and default policies.
-    pub fn with_resolver(resolver: R) -> Self {
+    /// Creates a configuration using a custom resolver, supplied endpoint
+    /// assumptions, and default DNS cache policies.
+    pub fn with_resolver(resolver: R, endpoint: EndpointConfig) -> Self {
         Self {
             resolver,
-            endpoint: EndpointConfig::default(),
+            endpoint,
             refresh_after: DEFAULT_REFRESH_AFTER,
             evict_after_idle: DEFAULT_EVICT_AFTER_IDLE,
             evict_after_stale: DEFAULT_EVICT_AFTER_STALE,
@@ -192,12 +188,6 @@ impl<R> AdaptiveDnsLayer<R> {
     /// Returns the configuration used by services created by this layer.
     pub fn config(&self) -> &AdaptiveDnsConfig<R> {
         &self.config
-    }
-}
-
-impl Default for AdaptiveDnsLayer {
-    fn default() -> Self {
-        Self::new(AdaptiveDnsConfig::new())
     }
 }
 

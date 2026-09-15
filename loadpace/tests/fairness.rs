@@ -7,7 +7,7 @@
 
 use loadpace::{
     DispatchReservation, DispatchState, EndpointConfig, EndpointController, InFlightRequest,
-    LatencyEstimatorConfig, Outcome,
+    Outcome,
 };
 use rand::rngs::StdRng;
 use rand::{RngExt, SeedableRng};
@@ -71,19 +71,7 @@ struct FairnessReport {
 }
 
 fn config(initial_rtt: Duration) -> EndpointConfig {
-    EndpointConfig {
-        queue_capacity: 4,
-        max_inflight: 1024,
-        latency: LatencyEstimatorConfig {
-            initial_rtt,
-            short_alpha: 0.25,
-            long_alpha: 0.05,
-            min_rtt: initial_rtt,
-            baseline_window: Duration::from_secs(60),
-        },
-        probe_schedule: fairness_probe_schedule(),
-        ..EndpointConfig::default()
-    }
+    EndpointConfig::new(initial_rtt, 1)
 }
 
 fn run(
@@ -365,28 +353,15 @@ fn run(
     }
 }
 
-fn fairness_probe_schedule() -> loadpace::ProbeSchedule {
-    loadpace::ProbeSchedule {
-        positive_probability: 0.5,
-        negative_probability: 0.5,
-        positive_rate_delta: 20.0,
-        negative_factor: 0.8,
-        duration: Duration::from_millis(250),
-        min_interval: Duration::from_millis(500),
-        max_interval: Duration::from_millis(500),
-    }
-}
-
 fn endpoint_config(
     base: &EndpointConfig,
     service_time: Duration,
     network_rtt: Duration,
 ) -> EndpointConfig {
-    let mut config = base.clone();
     let uncongested_rtt = service_time + network_rtt;
-    config.latency.initial_rtt = uncongested_rtt;
-    config.latency.min_rtt = uncongested_rtt;
-    config
+    EndpointConfig::new(uncongested_rtt, base.initial_concurrency())
+        .with_queue_capacity(base.queue_capacity())
+        .with_max_inflight(base.max_inflight())
 }
 
 fn jain(values: &[u64]) -> f64 {

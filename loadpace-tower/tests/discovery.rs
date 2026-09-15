@@ -6,6 +6,7 @@ use std::future::Future;
 use std::marker::PhantomPinned;
 use std::pin::Pin;
 use std::task::{Context, Poll};
+use std::time::Duration;
 use tower::discover::Change;
 use tower::{BoxError, Service, ServiceExt};
 
@@ -59,7 +60,8 @@ async fn discovery_wraps_inserts_and_preserves_removes() {
         Ok::<_, BoxError>(Change::Insert(7_u64, BoxedEcho)),
         Ok::<_, BoxError>(Change::Remove(7_u64)),
     ]);
-    let mut discovery = AdaptiveDiscovery::new(changes, EndpointConfig::default());
+    let mut discovery =
+        AdaptiveDiscovery::new(changes, EndpointConfig::new(Duration::from_millis(50), 1));
 
     let insert = discovery.next().await.unwrap().unwrap();
     let endpoint = match insert {
@@ -83,7 +85,8 @@ async fn discovery_can_feed_towers_p2c_balance() {
         Ok::<_, BoxError>(Change::Insert(1_u64, BoxedEcho)),
         Ok::<_, BoxError>(Change::Insert(2_u64, BoxedEcho)),
     ]);
-    let discovery = AdaptiveDiscovery::new(changes, EndpointConfig::default());
+    let discovery =
+        AdaptiveDiscovery::new(changes, EndpointConfig::new(Duration::from_millis(50), 1));
     let balance = tower::balance::p2c::Balance::new(discovery);
 
     assert_eq!(balance.oneshot(99).await.unwrap(), 99);
@@ -95,7 +98,8 @@ async fn discovery_accepts_a_non_unpin_stream() {
         Ok::<_, BoxError>(Change::Insert(7_u64, BoxedEcho)),
         Ok::<_, BoxError>(Change::Remove(7_u64)),
     ]));
-    let discovery = AdaptiveDiscovery::new(changes, EndpointConfig::default());
+    let discovery =
+        AdaptiveDiscovery::new(changes, EndpointConfig::new(Duration::from_millis(50), 1));
     futures_util::pin_mut!(discovery);
 
     let insert = discovery.next().await.unwrap().unwrap();
@@ -109,7 +113,8 @@ async fn discovery_accepts_a_non_unpin_stream() {
 #[tokio::test]
 async fn discovery_mapping_does_not_require_service_or_key_bounds() {
     let changes = stream::iter([Ok::<_, BoxError>(Change::Insert(1.5_f64, NotAService))]);
-    let mut discovery = AdaptiveDiscovery::new(changes, EndpointConfig::default());
+    let mut discovery =
+        AdaptiveDiscovery::new(changes, EndpointConfig::new(Duration::from_millis(50), 1));
 
     assert!(matches!(
         discovery.next().await.unwrap().unwrap(),

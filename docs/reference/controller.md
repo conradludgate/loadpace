@@ -17,16 +17,23 @@ boundary.
 
 ## `EndpointConfig`
 
-| Field | Default | Meaning |
-| --- | ---: | --- |
-| `queue_capacity` | `4` | Accepted but not-yet-dispatched requests per endpoint |
-| `max_inflight` | `1024` | Emergency cap on actually dispatched requests |
-| `latency` | `LatencyEstimatorConfig::default()` | RTT estimator parameters |
-| `gradient` | `Gradient2Config::default()` | Fractional Gradient2 operating-point parameters |
-| `probe_schedule` | `ProbeSchedule::default()` | Randomized probe timing and perturbation parameters |
+`EndpointConfig::new(expected_rtt, initial_concurrency)` requires the two
+workload assumptions needed to establish an initial rate. There is no
+`Default` implementation: endpoint latency and capacity are deployment facts,
+and silently assuming a concurrency of one is too restrictive for many
+services.
 
-The builder-style methods `.queue_capacity(value)` and
-`.max_inflight(value)` cover the two most common settings.
+| Setting | Initial value | Builder | Getter |
+| --- | ---: | --- | --- |
+| Expected RTT | required | constructor only | `expected_rtt()` |
+| Initial concurrency | required | constructor only | `initial_concurrency()` |
+| Tolerated queueing delay | half the expected RTT | `with_queue_tolerance(value)` | `queue_tolerance()` |
+| Scheduling horizon | `4` | `with_queue_capacity(value)` | `queue_capacity()` |
+| Emergency inflight cap | `max(1024, 4 × initial concurrency)` | `with_max_inflight(value)` | `max_inflight()` |
+
+The endpoint config intentionally contains no Gradient2, EWMA, or probe
+types. Those parameters are derived internally from workload assumptions so a
+future controller implementation can preserve this API.
 
 ## `EndpointController`
 
@@ -38,6 +45,7 @@ The builder-style methods `.queue_capacity(value)` and
 | `dispatch_state(reservation, now)` | Refreshes time-driven policy, then reports `Ready`, a recheck deadline, FIFO wait, inflight limit, or cancellation |
 | `on_dispatched(reservation, now)` | Atomically commits a ready reservation, or returns its current `DispatchState` |
 | `on_complete(request, outcome, latency, now)` | Releases inflight state and updates feedback; returns whether the token belonged to an active request |
+| `on_abandoned(request, now)` | Releases and penalizes dispatched work that ended without endpoint feedback, without resetting the silence clock |
 | `cancel(reservation, now)` | Removes a queued reservation and rebuilds the virtual tail |
 | `load(now)` | Returns predicted completion delay in seconds; lower is better |
 | `snapshot(now)` | Returns metrics and current controller state |
@@ -71,7 +79,8 @@ observations to age out without allocating per-request history.
 
 `Outcome::Success` updates RTT and Gradient2 feedback. `Outcome::Failure`
 reduces the operating point without treating a fast failure as a healthy RTT
-sample.
+sample. Both represent actual endpoint feedback. Use `on_abandoned` for a
+client-side timeout or cancellation where no response was received.
 
 Healthy Gradient2 updates are time-gated by `Gradient2Config::update_interval`.
 RTT samples continue to update the latency estimator, but a higher response
@@ -79,9 +88,17 @@ rate cannot cause proportionally faster operating-point growth.
 
 ## `ControllerSnapshot`
 
-The snapshot includes RTT estimates, target/effective concurrency, derived
-rates, committed and virtual TAT, queue and inflight depth, completion/failure
-counters, sample count, and active probe state.
+The snapshot includes RTT estimates, target/effective concurrency, base,
+probed and effective rates, feedback silence and decay factor, committed and
+virtual TAT, queue and inflight depth, completion/failure counters, sample
+count, and active probe state.
+
+While requests are inflight, the controller measures time since the most
+recent real endpoint feedback. It allows one expected RTT of grace, then
+halves the paced rate for every additional expected RTT of silence. This
+continues dispatching at a progressively lower rate instead of hard-pausing.
+Any real completion resets the decay epoch; abandoning a request does not
+pretend feedback arrived while other requests remain inflight.
 
 ## `ProbeSchedule`
 

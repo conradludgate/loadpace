@@ -290,12 +290,6 @@ impl AdaptiveLayer {
     }
 }
 
-impl Default for AdaptiveLayer {
-    fn default() -> Self {
-        Self::new(EndpointConfig::default())
-    }
-}
-
 impl<S> Layer<S> for AdaptiveLayer {
     type Service = AdaptiveEndpoint<S>;
 

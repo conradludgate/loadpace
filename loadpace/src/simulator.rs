@@ -45,7 +45,7 @@ impl Default for SimulationConfig {
             duration: Duration::from_secs(10),
             offered_rate: 1.0,
             endpoints: vec![SimulatedEndpoint {
-                config: EndpointConfig::default(),
+                config: EndpointConfig::new(Duration::from_millis(50), 1),
                 workers: 1,
                 service_time: Duration::from_millis(50),
             }],

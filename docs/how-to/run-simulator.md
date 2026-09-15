@@ -14,7 +14,8 @@ use loadpace::{
 };
 
 let endpoint = SimulatedEndpoint {
-    config: EndpointConfig::default().queue_capacity(4),
+    config: EndpointConfig::new(Duration::from_millis(20), 32)
+        .with_queue_capacity(4),
     workers: 2,
     service_time: Duration::from_millis(20),
 };
@@ -42,12 +43,12 @@ let report = simulate(SimulationConfig {
     offered_rate: 100.0,
     endpoints: vec![
         SimulatedEndpoint {
-            config: EndpointConfig::default(),
+            config: EndpointConfig::new(Duration::from_millis(10), 10),
             workers: 1,
             service_time: Duration::from_millis(10),
         },
         SimulatedEndpoint {
-            config: EndpointConfig::default(),
+            config: EndpointConfig::new(Duration::from_millis(100), 10),
             workers: 1,
             service_time: Duration::from_millis(100),
         },

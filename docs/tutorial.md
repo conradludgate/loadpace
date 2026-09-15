@@ -31,6 +31,7 @@ Replace `src/main.rs` with:
 
 ```rust
 use std::convert::Infallible;
+use std::time::Duration;
 
 use loadpace::EndpointConfig;
 use loadpace_tower::AdaptiveEndpoint;
@@ -42,7 +43,7 @@ async fn main() -> Result<(), Infallible> {
         service_fn(|request: u64| async move {
             Ok::<_, Infallible>(request * 2)
         }),
-        EndpointConfig::default(),
+        EndpointConfig::new(Duration::from_millis(20), 32),
     );
 
     let response = endpoint.oneshot(21).await?;
@@ -64,9 +65,10 @@ You should see:
 response: 42
 ```
 
-The first request can dispatch immediately. The endpoint starts with a
-conservative RTT and operating-point estimate; after responses arrive, the
-controller updates its rate and future requests are paced by GCRA.
+The first request can dispatch immediately. This example tells the controller
+to start from a 20 ms RTT and 32 concurrent requests, which implies an initial
+rate of 1,600 requests per second. After responses arrive, the controller
+updates its estimates and future requests are paced by GCRA.
 
 ## Inspect the controller
 
@@ -74,7 +76,8 @@ Keep the endpoint in a variable rather than consuming it if you want to read
 its metrics:
 
 ```rust
-let mut endpoint = AdaptiveEndpoint::new(service, EndpointConfig::default());
+let config = EndpointConfig::new(Duration::from_millis(20), 32);
+let mut endpoint = AdaptiveEndpoint::new(service, config);
 let response = endpoint.ready().await?.call(request).await?;
 let snapshot = endpoint.snapshot();
 

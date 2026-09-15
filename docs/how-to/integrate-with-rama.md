@@ -55,8 +55,9 @@ Admission is synchronous because Rama does not have Tower's `poll_ready`
 contract. Calling `serve` reserves one slot immediately; if the configured
 virtual horizon is full, the returned future resolves to
 `ServiceError::Rejected` and the backend is not called. Dropping an admitted
-future releases its reservation. Dropping it after dispatch records a failure,
-which keeps cancellation visible to the controller.
+future releases its reservation. Dropping it after dispatch records an
+abandonment, which reduces the operating point without pretending endpoint
+feedback arrived.
 
 ## Use a layer
 
@@ -66,8 +67,10 @@ When the service is assembled through Rama layers, use `AdaptiveLayer`:
 use loadpace::EndpointConfig;
 use loadpace_rama::AdaptiveLayer;
 use rama::Layer;
+use std::time::Duration;
 
-let paced = AdaptiveLayer::new(EndpointConfig::default()).layer(backend);
+let config = EndpointConfig::new(Duration::from_millis(20), 32);
+let paced = AdaptiveLayer::new(config).layer(backend);
 ```
 
 The layer creates independent controller state for each inner service it wraps.
@@ -79,10 +82,9 @@ virtual queue across callers.
 `AdaptiveEndpoint::load_metric` returns the predicted completion cost in
 seconds, which can be used by a higher-level Rama balancer. `snapshot` exposes
 the RTT, concurrency, queue, inflight, completion, and probe state for
-metrics. With the default `EndpointConfig`, the controller automatically
-advances the probe schedule during normal dispatch and load-selection
-operations. No timer, background task, or application probe callback is
-required.
+metrics. The controller automatically advances its internally derived probe
+schedule during normal dispatch and load-selection operations. No timer,
+background task, or application probe callback is required.
 
 See the [controller reference](../reference/controller.md) for the shared
 semantics and defaults.

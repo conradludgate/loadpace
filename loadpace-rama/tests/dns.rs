@@ -1,6 +1,6 @@
 #![cfg(feature = "dns")]
 
-use loadpace::{EndpointConfig, LatencyEstimatorConfig, ProbeSchedule, ScheduleError};
+use loadpace::{EndpointConfig, ScheduleError};
 use loadpace_rama::dns::{AdaptiveDnsConfig, AdaptiveDnsLoadBalancer, DnsServiceError};
 use rama::{
     Service,
@@ -216,33 +216,19 @@ impl Service<TestRequest> for HeldInner {
 }
 
 fn endpoint_config(queue_capacity: usize) -> EndpointConfig {
-    EndpointConfig {
-        queue_capacity,
-        max_inflight: 16,
-        latency: LatencyEstimatorConfig {
-            initial_rtt: Duration::from_secs(1),
-            short_alpha: 1.0,
-            long_alpha: 1.0,
-            min_rtt: Duration::from_micros(1),
-            baseline_window: Duration::from_secs(60),
-        },
-        probe_schedule: ProbeSchedule {
-            positive_probability: 0.0,
-            negative_probability: 0.0,
-            ..ProbeSchedule::default()
-        },
-        ..EndpointConfig::default()
-    }
+    EndpointConfig::new(Duration::from_secs(1), 1)
+        .with_queue_capacity(queue_capacity)
+        .with_max_inflight(16)
 }
 
 fn dns_config(
     resolver: MutableResolver,
     queue_capacity: usize,
 ) -> AdaptiveDnsConfig<MutableResolver> {
+    let endpoint = endpoint_config(queue_capacity);
     AdaptiveDnsConfig {
-        endpoint: endpoint_config(queue_capacity),
         mode: DnsResolveIpMode::SingleIpV4,
-        ..AdaptiveDnsConfig::with_resolver(resolver)
+        ..AdaptiveDnsConfig::with_resolver(resolver, endpoint)
     }
 }
 
@@ -425,10 +411,10 @@ async fn changed_dns_ordering_cannot_deadlock() {
         calls: Arc::new(AtomicUsize::new(0)),
     };
     let inner = ImmediateInner::default();
+    let endpoint = endpoint_config(128);
     let mut config = AdaptiveDnsConfig {
-        endpoint: endpoint_config(128),
         mode: DnsResolveIpMode::SingleIpV4,
-        ..AdaptiveDnsConfig::with_resolver(resolver)
+        ..AdaptiveDnsConfig::with_resolver(resolver, endpoint)
     };
     config.refresh_after = Duration::ZERO;
     let service = AdaptiveDnsLoadBalancer::new(inner, config);

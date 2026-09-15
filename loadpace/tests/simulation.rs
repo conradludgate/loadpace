@@ -1,28 +1,11 @@
-use loadpace::{
-    EndpointConfig, Gradient2Config, LatencyEstimatorConfig, ProbeSchedule, SimulatedEndpoint,
-    SimulationConfig, simulate,
-};
+use loadpace::{EndpointConfig, SimulatedEndpoint, SimulationConfig, simulate};
 use std::time::Duration;
 
 fn endpoint(queue_capacity: usize, service_time: Duration) -> SimulatedEndpoint {
     SimulatedEndpoint {
-        config: EndpointConfig {
-            queue_capacity,
-            max_inflight: 16,
-            latency: LatencyEstimatorConfig {
-                initial_rtt: service_time,
-                short_alpha: 1.0,
-                long_alpha: 1.0,
-                min_rtt: service_time,
-                baseline_window: Duration::from_secs(60),
-            },
-            gradient: Gradient2Config {
-                initial_concurrency: 1.0,
-                max_concurrency: 100.0,
-                ..Gradient2Config::default()
-            },
-            probe_schedule: ProbeSchedule::default(),
-        },
+        config: EndpointConfig::new(service_time, 1)
+            .with_queue_capacity(queue_capacity)
+            .with_max_inflight(16),
         workers: 1,
         service_time,
     }
@@ -65,7 +48,7 @@ fn simulator_models_worker_capacity_and_queueing_latency() {
         duration: Duration::from_secs(2),
         offered_rate: 500.0,
         endpoints: vec![SimulatedEndpoint {
-            config: EndpointConfig::default().queue_capacity(4),
+            config: EndpointConfig::new(Duration::from_millis(50), 1).with_queue_capacity(4),
             workers: 2,
             service_time: Duration::from_millis(10),
         }],

@@ -42,6 +42,7 @@ with `AdaptiveEndpoint`:
 
 ```rust
 use std::convert::Infallible;
+use std::time::Duration;
 use loadpace::EndpointConfig;
 use loadpace_rama::AdaptiveEndpoint;
 use rama::Service;
@@ -60,7 +61,10 @@ impl Service<u64> for Double {
 
 #[tokio::main]
 async fn main() -> Result<(), loadpace_rama::ServiceError<Infallible>> {
-    let endpoint = AdaptiveEndpoint::new(Double, EndpointConfig::default());
+    let endpoint = AdaptiveEndpoint::new(
+        Double,
+        EndpointConfig::new(Duration::from_millis(20), 32),
+    );
     assert_eq!(endpoint.serve(21).await?, 42);
     Ok(())
 }
@@ -70,16 +74,18 @@ Rama has no `poll_ready` reservation phase. `AdaptiveEndpoint::serve` admits
 the request synchronously into a bounded virtual scheduling horizon. If that
 horizon is full, the future resolves to `ServiceError::Rejected` without
 calling the inner service. If an admitted future is dropped before dispatch,
-its reservation is cancelled; cancellation after dispatch is recorded as a
-failure sample.
+its reservation is cancelled; cancellation after dispatch is recorded as an
+abandonment without pretending that endpoint feedback arrived.
 
 Use `AdaptiveLayer` when composing Rama layers:
 
 ```rust
 use loadpace::EndpointConfig;
 use loadpace_rama::AdaptiveLayer;
+use std::time::Duration;
 
-let endpoint = AdaptiveLayer::new(EndpointConfig::default()).layer(inner);
+let config = EndpointConfig::new(Duration::from_millis(20), 32);
+let endpoint = AdaptiveLayer::new(config).layer(inner);
 ```
 
 ## Adaptive DNS balancing
@@ -89,12 +95,15 @@ of a Rama connector:
 
 ```rust,no_run
 use loadpace_rama::dns::{AdaptiveDnsConfig, AdaptiveDnsLayer};
+use loadpace::EndpointConfig;
 use rama::Layer;
+use std::time::Duration;
 
 # let connector = rama::service::service_fn(|request: rama::net::client::ConnectRequest| async move {
 #     Ok::<_, std::convert::Infallible>(request)
 # });
-let connector = AdaptiveDnsLayer::new(AdaptiveDnsConfig::new()).layer(connector);
+let endpoint = EndpointConfig::new(Duration::from_millis(20), 32);
+let connector = AdaptiveDnsLayer::new(AdaptiveDnsConfig::new(endpoint)).layer(connector);
 ```
 
 The layer belongs immediately outside the connector (or connector stack) that

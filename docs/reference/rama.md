@@ -24,8 +24,9 @@ wrapped service:
 - `ServiceError::Inner(E)` means the request reached the inner service.
 
 Dropping an admitted future before dispatch cancels its virtual reservation.
-Dropping it after dispatch records a failure outcome. This preserves bounded
-admission and makes cancellation visible to the controller.
+Dropping it after dispatch records abandonment and reduces the operating point
+without resetting the missing-feedback clock. This preserves bounded admission
+without treating cancellation as a response from the endpoint.
 
 ## `AdaptiveLayer`
 

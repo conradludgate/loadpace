@@ -11,40 +11,97 @@ use std::time::{Duration, Instant};
 
 static NEXT_CONTROLLER_ID: AtomicU64 = AtomicU64::new(0);
 
+const SHORT_RTT_HALF_LIVES: f64 = 2.0;
+const LONG_RTT_HALF_LIVES: f64 = 20.0;
+const BASELINE_RTT_WINDOWS: u32 = 1_200;
+
 /// Configuration for one adaptive endpoint.
 #[derive(Clone, Debug)]
 pub struct EndpointConfig {
-    /// Number of accepted-but-not-yet-dispatched requests allowed per endpoint.
-    pub queue_capacity: usize,
-    /// Emergency-only cap for requests that have actually dispatched.
-    pub max_inflight: usize,
-    /// RTT estimator configuration.
-    pub latency: LatencyEstimatorConfig,
-    /// Fractional operating-point configuration.
-    pub gradient: Gradient2Config,
-    /// Randomized probe policy used by the controller during normal dispatch
-    /// and load-selection refreshes.
-    pub probe_schedule: ProbeSchedule,
-}
-
-impl Default for EndpointConfig {
-    fn default() -> Self {
-        Self {
-            queue_capacity: 4,
-            max_inflight: 1024,
-            latency: LatencyEstimatorConfig::default(),
-            gradient: Gradient2Config::default(),
-            probe_schedule: ProbeSchedule::default(),
-        }
-    }
+    expected_rtt: Duration,
+    initial_concurrency: usize,
+    queue_tolerance: Duration,
+    queue_capacity: usize,
+    max_inflight: usize,
 }
 
 impl EndpointConfig {
+    /// Creates endpoint configuration from workload-level assumptions.
+    ///
+    /// `expected_rtt` is the typical dispatch-to-response round-trip time
+    /// before the controller has observations. `initial_concurrency` is the
+    /// number of requests the endpoint is expected to sustain concurrently at
+    /// startup. Together they establish the initial rate using Little's Law.
+    ///
+    /// Algorithm-specific estimator, congestion-control, and probe parameters
+    /// are derived internally so applications are not coupled to a particular
+    /// controller implementation.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `expected_rtt` or `initial_concurrency` is zero.
+    #[must_use]
+    pub fn new(expected_rtt: Duration, initial_concurrency: usize) -> Self {
+        assert!(!expected_rtt.is_zero(), "expected RTT must be positive");
+        assert!(
+            initial_concurrency > 0,
+            "initial concurrency must be positive"
+        );
+        Self {
+            expected_rtt,
+            initial_concurrency,
+            queue_tolerance: expected_rtt / 2,
+            queue_capacity: 4,
+            max_inflight: initial_concurrency.saturating_mul(4).max(1024),
+        }
+    }
+
+    /// Returns the initial dispatch-to-response RTT estimate.
+    #[must_use]
+    pub fn expected_rtt(&self) -> Duration {
+        self.expected_rtt
+    }
+
+    /// Returns the initial sustainable concurrency assumption.
+    #[must_use]
+    pub fn initial_concurrency(&self) -> usize {
+        self.initial_concurrency
+    }
+
+    /// Returns the queueing delay tolerated by congestion control.
+    #[must_use]
+    pub fn queue_tolerance(&self) -> Duration {
+        self.queue_tolerance
+    }
+
+    /// Returns the bounded scheduling horizon per endpoint.
+    #[must_use]
+    pub fn queue_capacity(&self) -> usize {
+        self.queue_capacity
+    }
+
+    /// Returns the emergency cap on dispatched requests.
+    #[must_use]
+    pub fn max_inflight(&self) -> usize {
+        self.max_inflight
+    }
+
+    /// Sets the queueing delay tolerated before reducing the operating point.
+    ///
+    /// The default is half of `expected_rtt`. This is an absolute delay budget,
+    /// not a multiplier, so callers can align it with a service-level target.
+    #[must_use]
+    pub fn with_queue_tolerance(mut self, tolerance: Duration) -> Self {
+        self.queue_tolerance = tolerance;
+        self
+    }
+
     /// Sets the maximum number of accepted but not-yet-dispatched requests.
     ///
     /// This is a bounded scheduling horizon rather than an overload buffer.
     /// A controller rejects further reservations once the capacity is used.
-    pub fn queue_capacity(mut self, capacity: usize) -> Self {
+    #[must_use]
+    pub fn with_queue_capacity(mut self, capacity: usize) -> Self {
         self.queue_capacity = capacity;
         self
     }
@@ -53,10 +110,46 @@ impl EndpointConfig {
     ///
     /// Normal traffic should be controlled by pacing before this limit is
     /// reached. The cap protects against pathological latency and stuck work.
-    pub fn max_inflight(mut self, max_inflight: usize) -> Self {
+    #[must_use]
+    pub fn with_max_inflight(mut self, max_inflight: usize) -> Self {
         self.max_inflight = max_inflight;
         self
     }
+
+    fn latency_config(&self) -> LatencyEstimatorConfig {
+        let expected_samples_per_rtt = self.initial_concurrency as f64;
+        LatencyEstimatorConfig {
+            initial_rtt: self.expected_rtt,
+            short_alpha: ewma_alpha(expected_samples_per_rtt * SHORT_RTT_HALF_LIVES),
+            long_alpha: ewma_alpha(expected_samples_per_rtt * LONG_RTT_HALF_LIVES),
+            min_rtt: Duration::from_micros(1).min(self.expected_rtt),
+            baseline_window: self
+                .expected_rtt
+                .saturating_mul(BASELINE_RTT_WINDOWS)
+                .max(Duration::from_secs(60)),
+        }
+    }
+
+    fn gradient_config(&self) -> Gradient2Config {
+        Gradient2Config {
+            initial_concurrency: self.initial_concurrency as f64,
+            min_concurrency: 0.25,
+            max_concurrency: self.max_inflight as f64,
+            queue_tolerance: self.queue_tolerance,
+            gain: 0.1,
+            smoothing: 0.2,
+            update_interval: self.expected_rtt.saturating_mul(2),
+            failure_factor: 0.7,
+        }
+    }
+
+    fn probe_schedule(&self) -> ProbeSchedule {
+        ProbeSchedule::default()
+    }
+}
+
+fn ewma_alpha(samples_per_half_life: f64) -> f64 {
+    1.0 - 0.5_f64.powf(samples_per_half_life.recip())
 }
 
 /// Classification supplied by the caller after a request completes.
@@ -214,7 +307,7 @@ impl EndpointController {
     /// # Panics
     ///
     /// Panics when the queue capacity or emergency inflight cap is zero, or
-    /// when the nested latency or Gradient2 configuration is invalid.
+    /// when initial concurrency exceeds the emergency inflight cap.
     pub fn new(config: EndpointConfig, now: Instant) -> Self {
         Self::new_with_rng(config, now, rand::make_rng())
     }
@@ -237,10 +330,14 @@ impl EndpointController {
             "endpoint queue capacity must be positive"
         );
         assert!(config.max_inflight > 0, "max inflight must be positive");
+        assert!(
+            config.initial_concurrency <= config.max_inflight,
+            "initial concurrency must not exceed max inflight"
+        );
 
-        config.probe_schedule.validate();
-        let latency = LatencyEstimator::new(config.latency.clone());
-        let gradient = Gradient2::new(config.gradient.clone());
+        config.probe_schedule().validate();
+        let latency = LatencyEstimator::new(config.latency_config());
+        let gradient = Gradient2::new(config.gradient_config());
         let rate = gradient.concurrency() / latency.expected_rtt().as_secs_f64();
         let controller_id = NEXT_CONTROLLER_ID.fetch_add(1, Ordering::Relaxed);
 
@@ -553,7 +650,7 @@ impl EndpointController {
         // the initial request is not treated as a probe opportunity.
         if self.latency.samples() > 0 || (self.inflight > 0 && !self.pending.is_empty()) {
             self.config
-                .probe_schedule
+                .probe_schedule()
                 .maybe_start(&mut self.probe, &mut self.probe_rng, now);
         }
         let _ = self.probe.active(now);

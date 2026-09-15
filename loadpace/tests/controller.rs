@@ -1,11 +1,43 @@
 use loadpace::{
     DispatchState, EndpointConfig, EndpointController, Gcra, Gradient2, Gradient2Config,
-    LatencyEstimator, LatencyEstimatorConfig, Outcome, ProbeKind, ProbeSchedule, ScheduleError,
+    LatencyEstimator, LatencyEstimatorConfig, Outcome, ScheduleError,
 };
 use std::time::{Duration, Instant};
 
 fn at_zero() -> Instant {
     Instant::now()
+}
+
+#[test]
+fn endpoint_config_derives_safe_defaults_from_workload_assumptions() {
+    let config = EndpointConfig::new(Duration::from_millis(20), 32);
+
+    assert_eq!(config.expected_rtt(), Duration::from_millis(20));
+    assert_eq!(config.initial_concurrency(), 32);
+    assert_eq!(config.queue_tolerance(), Duration::from_millis(10));
+    assert_eq!(config.queue_capacity(), 4);
+    assert_eq!(config.max_inflight(), 1024);
+
+    let controller = EndpointController::new(config, at_zero());
+    assert_eq!(controller.pacer().rate(), 1_600.0);
+}
+
+#[test]
+fn endpoint_config_scales_the_default_safety_cap_for_large_endpoints() {
+    let config = EndpointConfig::new(Duration::from_millis(20), 2_000);
+    assert_eq!(config.max_inflight(), 8_000);
+}
+
+#[test]
+#[should_panic(expected = "expected RTT must be positive")]
+fn endpoint_config_rejects_zero_expected_rtt() {
+    let _ = EndpointConfig::new(Duration::ZERO, 1);
+}
+
+#[test]
+#[should_panic(expected = "initial concurrency must be positive")]
+fn endpoint_config_rejects_zero_initial_concurrency() {
+    let _ = EndpointConfig::new(Duration::from_millis(20), 0);
 }
 
 #[test]
@@ -265,15 +297,8 @@ fn gradient2_does_not_grow_when_application_limited() {
 #[test]
 fn controller_marks_future_slots_as_paced() {
     let now = at_zero();
-    let config = EndpointConfig {
-        probe_schedule: ProbeSchedule {
-            positive_probability: 0.0,
-            negative_probability: 0.0,
-            ..ProbeSchedule::default()
-        },
-        ..EndpointConfig::default()
-    };
-    let mut controller = EndpointController::new(config, now);
+    let config = EndpointConfig::new(Duration::from_millis(50), 1);
+    let mut controller = EndpointController::new_with_seed(config, now, 42);
 
     let first_reservation = controller.reserve(now).unwrap();
     let first = controller
@@ -302,7 +327,11 @@ fn controller_marks_future_slots_as_paced() {
 #[test]
 fn controller_does_not_mark_a_collapsed_virtual_slot_as_paced() {
     let now = at_zero();
-    let mut controller = EndpointController::new(EndpointConfig::default(), now);
+    let mut controller = EndpointController::new_with_seed(
+        EndpointConfig::new(Duration::from_millis(50), 1),
+        now,
+        42,
+    );
 
     let first = controller.reserve(now).unwrap();
     let second = controller.reserve(now).unwrap();
@@ -315,162 +344,11 @@ fn controller_does_not_mark_a_collapsed_virtual_slot_as_paced() {
 }
 
 #[test]
-fn controller_drives_probes_when_demand_waits() {
-    let now = at_zero();
-    let config = EndpointConfig {
-        probe_schedule: ProbeSchedule {
-            positive_probability: 1.0,
-            negative_probability: 0.0,
-            positive_rate_delta: 20.0,
-            ..ProbeSchedule::default()
-        },
-        ..EndpointConfig::default()
-    };
-    let mut controller = EndpointController::new_with_seed(config, now, 5);
-
-    let first = controller.reserve(now).unwrap();
-    controller
-        .on_dispatched(first, now)
-        .expect("the first request should dispatch immediately");
-    controller.reserve(now).unwrap();
-    controller.refresh(now);
-
-    assert_eq!(
-        controller.active_probe().map(|probe| probe.kind),
-        Some(ProbeKind::Positive { delta_rate: 20.0 })
-    );
-}
-
-#[test]
-fn controller_load_refreshes_time_driven_policy() {
-    let now = at_zero();
-    let config = EndpointConfig {
-        probe_schedule: ProbeSchedule {
-            positive_probability: 1.0,
-            negative_probability: 0.0,
-            ..ProbeSchedule::default()
-        },
-        ..EndpointConfig::default()
-    };
-    let mut controller = EndpointController::new_with_seed(config, now, 5);
-    let reservation = controller.reserve(now).unwrap();
-    let request = controller.on_dispatched(reservation, now).unwrap();
-    assert!(controller.on_complete(
-        request,
-        Outcome::Success,
-        Duration::from_millis(50),
-        now + Duration::from_millis(50),
-    ));
-    assert_eq!(controller.active_probe(), None);
-
-    let _ = controller.load(now + Duration::from_millis(50));
-
-    assert_eq!(
-        controller.active_probe().map(|probe| probe.kind),
-        Some(ProbeKind::Positive { delta_rate: 20.0 })
-    );
-}
-
-#[test]
-fn positive_probe_adds_the_same_rate_across_rtts() {
-    fn probe_delta(initial_rtt: Duration) -> f64 {
-        let now = at_zero();
-        let config = EndpointConfig {
-            latency: LatencyEstimatorConfig {
-                initial_rtt,
-                min_rtt: initial_rtt,
-                ..LatencyEstimatorConfig::default()
-            },
-            probe_schedule: ProbeSchedule {
-                positive_probability: 1.0,
-                negative_probability: 0.0,
-                positive_rate_delta: 20.0,
-                ..ProbeSchedule::default()
-            },
-            ..EndpointConfig::default()
-        };
-        let mut controller = EndpointController::new_with_seed(config, now, 5);
-        let reservation = controller.reserve(now).unwrap();
-        let request = controller.on_dispatched(reservation, now).unwrap();
-        let completed_at = now + initial_rtt;
-        assert!(controller.on_complete(request, Outcome::Success, initial_rtt, completed_at,));
-
-        let snapshot = controller.snapshot(completed_at);
-        snapshot.effective_rate - snapshot.base_rate
-    }
-
-    let short_rtt_delta = probe_delta(Duration::from_millis(10));
-    let long_rtt_delta = probe_delta(Duration::from_millis(100));
-    assert!((short_rtt_delta - 20.0).abs() < 1e-9);
-    assert!((long_rtt_delta - 20.0).abs() < 1e-9);
-}
-
-#[test]
-fn dispatch_deadline_includes_controller_probe_transitions() {
-    let now = at_zero();
-    let config = EndpointConfig {
-        latency: LatencyEstimatorConfig {
-            initial_rtt: Duration::from_secs(1),
-            ..LatencyEstimatorConfig::default()
-        },
-        probe_schedule: ProbeSchedule {
-            positive_probability: 1.0,
-            negative_probability: 0.0,
-            positive_rate_delta: 0.5,
-            duration: Duration::from_millis(100),
-            min_interval: Duration::from_secs(1),
-            max_interval: Duration::from_secs(1),
-            ..ProbeSchedule::default()
-        },
-        ..EndpointConfig::default()
-    };
-    let mut controller = EndpointController::new_with_seed(config, now, 5);
-
-    let first = controller.reserve(now).unwrap();
-    controller.on_dispatched(first, now).unwrap();
-    let second = controller.reserve(now).unwrap();
-
-    assert_eq!(
-        controller.dispatch_state(second, now),
-        DispatchState::WaitUntil(now + Duration::from_millis(100)),
-        "the adapter must wake when the active probe expires, before the paced slot"
-    );
-}
-
-#[test]
-#[should_panic(expected = "probe probabilities")]
-fn probe_schedule_rejects_probabilities_that_exceed_one() {
-    let config = EndpointConfig {
-        probe_schedule: ProbeSchedule {
-            positive_probability: 0.8,
-            negative_probability: 0.3,
-            ..ProbeSchedule::default()
-        },
-        ..EndpointConfig::default()
-    };
-
-    EndpointController::new(config, at_zero());
-}
-
-#[test]
-#[should_panic(expected = "probe interval bounds")]
-fn probe_schedule_rejects_invalid_interval_bounds() {
-    let config = EndpointConfig {
-        probe_schedule: ProbeSchedule {
-            min_interval: Duration::from_secs(2),
-            max_interval: Duration::from_secs(1),
-            ..ProbeSchedule::default()
-        },
-        ..EndpointConfig::default()
-    };
-
-    EndpointController::new(config, at_zero());
-}
-
-#[test]
 fn controller_bounds_queue_and_releases_cancelled_virtual_slots() {
     let now = at_zero();
-    let config = EndpointConfig::default().queue_capacity(2).max_inflight(10);
+    let config = EndpointConfig::new(Duration::from_millis(50), 1)
+        .with_queue_capacity(2)
+        .with_max_inflight(10);
     let mut controller = EndpointController::new(config, now);
 
     let first = controller.reserve(now).unwrap();
@@ -494,22 +372,7 @@ fn controller_bounds_queue_and_releases_cancelled_virtual_slots() {
 #[test]
 fn controller_uses_little_law_and_records_failures() {
     let now = at_zero();
-    let config = EndpointConfig {
-        queue_capacity: 4,
-        max_inflight: 4,
-        latency: LatencyEstimatorConfig {
-            initial_rtt: Duration::from_secs(1),
-            short_alpha: 1.0,
-            long_alpha: 1.0,
-            min_rtt: Duration::from_millis(1),
-            baseline_window: Duration::from_secs(60),
-        },
-        gradient: Gradient2Config {
-            initial_concurrency: 1.3,
-            ..Gradient2Config::default()
-        },
-        probe_schedule: ProbeSchedule::default(),
-    };
+    let config = EndpointConfig::new(Duration::from_secs(1), 2).with_max_inflight(4);
     let mut controller = EndpointController::new(config, now);
     let reservation = controller.reserve(now).unwrap();
     let active = controller.on_dispatched(reservation, now).unwrap();
@@ -523,15 +386,16 @@ fn controller_uses_little_law_and_records_failures() {
     let snapshot = controller.snapshot(now + Duration::from_secs(1));
     assert_eq!(snapshot.failures, 1);
     assert_eq!(snapshot.completed, 1);
-    assert!(snapshot.target_concurrency < 1.3);
+    assert!(snapshot.target_concurrency < 2.0);
     assert!(snapshot.effective_rate > 0.0);
 }
 
 #[test]
 fn controller_rejects_a_completion_from_another_controller() {
     let now = at_zero();
-    let mut first = EndpointController::new(EndpointConfig::default(), now);
-    let mut second = EndpointController::new(EndpointConfig::default(), now);
+    let mut first = EndpointController::new(EndpointConfig::new(Duration::from_millis(50), 1), now);
+    let mut second =
+        EndpointController::new(EndpointConfig::new(Duration::from_millis(50), 1), now);
 
     let first_reservation = first.reserve(now).unwrap();
     let first_request = first.on_dispatched(first_reservation, now).unwrap();
@@ -559,8 +423,9 @@ fn controller_rejects_a_completion_from_another_controller() {
 #[test]
 fn controller_rejects_foreign_and_cancelled_reservations() {
     let now = at_zero();
-    let mut first = EndpointController::new(EndpointConfig::default(), now);
-    let mut second = EndpointController::new(EndpointConfig::default(), now);
+    let mut first = EndpointController::new(EndpointConfig::new(Duration::from_millis(50), 1), now);
+    let mut second =
+        EndpointController::new(EndpointConfig::new(Duration::from_millis(50), 1), now);
 
     let foreign = first.reserve(now).unwrap();
     assert!(!second.cancel(foreign, now));
@@ -581,15 +446,7 @@ fn controller_rejects_foreign_and_cancelled_reservations() {
 #[test]
 fn controller_requires_fifo_dispatch_and_enforces_the_inflight_cap() {
     let now = at_zero();
-    let config = EndpointConfig {
-        max_inflight: 1,
-        probe_schedule: ProbeSchedule {
-            positive_probability: 0.0,
-            negative_probability: 0.0,
-            ..ProbeSchedule::default()
-        },
-        ..EndpointConfig::default()
-    };
+    let config = EndpointConfig::new(Duration::from_millis(50), 1).with_max_inflight(1);
     let mut controller = EndpointController::new(config, now);
 
     let first = controller.reserve(now).unwrap();
@@ -621,7 +478,8 @@ fn controller_requires_fifo_dispatch_and_enforces_the_inflight_cap() {
 #[test]
 fn controller_records_admission_failures_without_inflight_work() {
     let now = at_zero();
-    let mut controller = EndpointController::new(EndpointConfig::default(), now);
+    let mut controller =
+        EndpointController::new(EndpointConfig::new(Duration::from_millis(50), 1), now);
     let initial_target = controller.gradient().concurrency();
 
     controller.on_admission_failure(now);
@@ -634,33 +492,16 @@ fn controller_records_admission_failures_without_inflight_work() {
     assert!(snapshot.target_concurrency < initial_target);
 }
 
-fn no_probe_config(initial_rtt: Duration, initial_concurrency: f64) -> EndpointConfig {
-    EndpointConfig {
-        queue_capacity: 4,
-        max_inflight: 1024,
-        latency: LatencyEstimatorConfig {
-            initial_rtt,
-            min_rtt: initial_rtt,
-            ..LatencyEstimatorConfig::default()
-        },
-        gradient: Gradient2Config {
-            initial_concurrency,
-            max_concurrency: initial_concurrency.max(100.0),
-            ..Gradient2Config::default()
-        },
-        probe_schedule: ProbeSchedule {
-            positive_probability: 0.0,
-            negative_probability: 0.0,
-            ..ProbeSchedule::default()
-        },
-    }
+fn controller_config(expected_rtt: Duration, initial_concurrency: usize) -> EndpointConfig {
+    EndpointConfig::new(expected_rtt, initial_concurrency)
 }
 
 #[test]
 fn controller_halves_its_rate_for_each_expected_rtt_without_feedback() {
     let now = at_zero();
     let initial_rtt = Duration::from_millis(20);
-    let mut controller = EndpointController::new(no_probe_config(initial_rtt, 32.0), now);
+    let mut controller =
+        EndpointController::new_with_seed(controller_config(initial_rtt, 32), now, 42);
     let reservation = controller.reserve(now).unwrap();
     let request = controller.on_dispatched(reservation, now).unwrap();
 
@@ -692,7 +533,8 @@ fn controller_halves_its_rate_for_each_expected_rtt_without_feedback() {
 fn controller_uses_recent_feedback_instead_of_the_oldest_request_age() {
     let now = at_zero();
     let initial_rtt = Duration::from_millis(20);
-    let mut controller = EndpointController::new(no_probe_config(initial_rtt, 32.0), now);
+    let mut controller =
+        EndpointController::new_with_seed(controller_config(initial_rtt, 32), now, 42);
 
     let straggler = controller.reserve(now).unwrap();
     let straggler = controller.on_dispatched(straggler, now).unwrap();
@@ -714,7 +556,8 @@ fn controller_uses_recent_feedback_instead_of_the_oldest_request_age() {
 fn abandonment_does_not_count_as_feedback_while_other_work_is_inflight() {
     let now = at_zero();
     let initial_rtt = Duration::from_millis(20);
-    let mut controller = EndpointController::new(no_probe_config(initial_rtt, 32.0), now);
+    let mut controller =
+        EndpointController::new_with_seed(controller_config(initial_rtt, 32), now, 42);
 
     let first = controller.reserve(now).unwrap();
     let first = controller.on_dispatched(first, now).unwrap();
@@ -738,10 +581,9 @@ fn abandonment_does_not_count_as_feedback_while_other_work_is_inflight() {
 fn blackholed_endpoint_keeps_dispatching_but_bounds_exposure() {
     let now = at_zero();
     let initial_rtt = Duration::from_millis(20);
-    let initial_concurrency = 32.0;
-    let mut config = no_probe_config(initial_rtt, initial_concurrency);
-    config.queue_capacity = 1;
-    let mut controller = EndpointController::new(config, now);
+    let initial_concurrency = 32;
+    let config = controller_config(initial_rtt, initial_concurrency).with_queue_capacity(1);
+    let mut controller = EndpointController::new_with_seed(config, now, 42);
     let end = now + Duration::from_secs(1);
     let mut cursor = now;
     let mut dispatches = Vec::new();
@@ -761,7 +603,7 @@ fn blackholed_endpoint_keeps_dispatching_but_bounds_exposure() {
         dispatches.push(cursor);
     }
 
-    assert!(dispatches.len() > initial_concurrency as usize);
+    assert!(dispatches.len() > initial_concurrency);
     assert!(
         dispatches.len() < 90,
         "exponential decay should bound blackhole exposure: {dispatches:?}"
@@ -780,7 +622,8 @@ fn blackholed_endpoint_keeps_dispatching_but_bounds_exposure() {
 fn endpoint_recovers_immediately_when_feedback_resumes() {
     let now = at_zero();
     let initial_rtt = Duration::from_millis(20);
-    let mut controller = EndpointController::new(no_probe_config(initial_rtt, 32.0), now);
+    let mut controller =
+        EndpointController::new_with_seed(controller_config(initial_rtt, 32), now, 42);
     let mut requests = Vec::new();
     let mut cursor = now;
 
@@ -810,23 +653,23 @@ fn endpoint_recovers_immediately_when_feedback_resumes() {
 #[test]
 fn controller_exposes_its_configured_components() {
     let now = at_zero();
-    let config = EndpointConfig {
-        queue_capacity: 7,
-        max_inflight: 11,
-        latency: LatencyEstimatorConfig {
-            initial_rtt: Duration::from_millis(80),
-            ..LatencyEstimatorConfig::default()
-        },
-        gradient: Gradient2Config {
-            initial_concurrency: 2.0,
-            ..Gradient2Config::default()
-        },
-        ..EndpointConfig::default()
-    };
+    let config = EndpointConfig::new(Duration::from_millis(80), 2)
+        .with_queue_tolerance(Duration::from_millis(10))
+        .with_queue_capacity(7)
+        .with_max_inflight(11);
     let controller = EndpointController::new(config, now);
 
-    assert_eq!(controller.config().queue_capacity, 7);
-    assert_eq!(controller.config().max_inflight, 11);
+    assert_eq!(
+        controller.config().expected_rtt(),
+        Duration::from_millis(80)
+    );
+    assert_eq!(controller.config().initial_concurrency(), 2);
+    assert_eq!(
+        controller.config().queue_tolerance(),
+        Duration::from_millis(10)
+    );
+    assert_eq!(controller.config().queue_capacity(), 7);
+    assert_eq!(controller.config().max_inflight(), 11);
     assert_eq!(controller.pacer().rate(), 25.0);
     assert_eq!(controller.gradient().concurrency(), 2.0);
     assert_eq!(

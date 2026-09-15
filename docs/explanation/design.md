@@ -103,6 +103,33 @@ queue. Including those delays would create a feedback loop in which pacing
 causes the RTT estimate to rise, which reduces the rate, which causes more
 pacing delay.
 
+## Silence is congestion evidence
+
+Response-driven control otherwise has a blind spot: when packets blackhole or
+RTT rises abruptly, no completed sample exists to tell the controller to slow
+down. Continuing at the last learned rate can create an unbounded amount of
+inflight work before a transport timeout fires.
+
+Loadpace therefore tracks time since the most recent real endpoint feedback
+while any requests remain inflight. It allows one expected RTT of grace, then
+applies an exponential multiplier:
+
+```text
+excess silence = max(0, silence - expected RTT)
+feedback factor = 2 ^ -(excess silence / expected RTT)
+```
+
+The rate halves after each additional expected RTT of silence. It never hard
+pauses, so an endpoint can still receive progressively rarer requests and
+recover without a separate health-check path. A real success or failure resets
+the silence epoch. Dropping or timing out a local future penalizes the
+operating point but does not count as endpoint feedback while other work is
+still inflight.
+
+The clock is based on the latest response rather than the oldest outstanding
+request. One slow straggler therefore cannot throttle an endpoint that is
+still completing other work normally.
+
 ## Backpressure stays visible
 
 The endpoint queue is a small scheduling horizon, not an overload buffer. A

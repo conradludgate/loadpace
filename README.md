@@ -129,6 +129,7 @@ Wrap any suitable Tower service in an adaptive endpoint from `loadpace-tower`:
 
 ```rust
 use std::convert::Infallible;
+use std::time::Duration;
 use loadpace::EndpointConfig;
 use loadpace_tower::AdaptiveEndpoint;
 use tower::{service_fn, ServiceExt};
@@ -137,7 +138,7 @@ use tower::{service_fn, ServiceExt};
 async fn main() -> Result<(), Infallible> {
     let endpoint = AdaptiveEndpoint::new(
         service_fn(|request: u64| async move { Ok::<_, Infallible>(request * 2) }),
-        EndpointConfig::default(),
+        EndpointConfig::new(Duration::from_millis(20), 32),
     );
 
     let response = endpoint.oneshot(21).await?;
@@ -156,6 +157,7 @@ scheduling slot when the call is made:
 
 ```rust
 use std::convert::Infallible;
+use std::time::Duration;
 use loadpace::EndpointConfig;
 use loadpace_rama::AdaptiveEndpoint;
 use rama::Service;
@@ -174,7 +176,10 @@ impl Service<u64> for Double {
 
 #[tokio::main]
 async fn main() -> Result<(), loadpace_rama::ServiceError<Infallible>> {
-    let endpoint = AdaptiveEndpoint::new(Double, EndpointConfig::default());
+    let endpoint = AdaptiveEndpoint::new(
+        Double,
+        EndpointConfig::new(Duration::from_millis(20), 32),
+    );
     assert_eq!(endpoint.serve(21).await?, 42);
     Ok(())
 }
@@ -195,7 +200,7 @@ It combines:
 - Little's Law to derive a request rate;
 - GCRA pacing and virtual queue prediction;
 - controller-driven temporary additive and multiplicative probes;
-- explicit failure and cancellation handling;
+- explicit failure, abandonment, and cancellation handling;
 - a bounded scheduling queue and emergency inflight cap.
 
 The separate `loadpace-tower` crate provides:
@@ -237,7 +242,7 @@ The repository includes tests for:
 - GCRA spacing, debt, and cancellation;
 - RTT smoothing and fractional Gradient2 behavior;
 - positive and negative probing;
-- bounded queue admission and response cancellation;
+- bounded queue admission, response cancellation, and blackhole decay;
 - concurrent inner responses;
 - dynamic discovery and Tower P2C integration;
 - deterministic simulation, worker-pool saturation, and unequal endpoint latency;

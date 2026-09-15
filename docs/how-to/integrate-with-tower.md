@@ -29,9 +29,11 @@ unchanged.
 ```rust
 use loadpace::EndpointConfig;
 use loadpace_tower::AdaptiveDiscovery;
+use std::time::Duration;
 use tower::balance::p2c::Balance;
 
-let adaptive = AdaptiveDiscovery::new(discovery, EndpointConfig::default());
+let config = EndpointConfig::new(Duration::from_millis(20), 32);
+let adaptive = AdaptiveDiscovery::new(discovery, config);
 let client = Balance::new(adaptive);
 ```
 

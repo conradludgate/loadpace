@@ -1,4 +1,4 @@
-use loadpace::{EndpointConfig, LatencyEstimatorConfig, ProbeSchedule};
+use loadpace::EndpointConfig;
 use loadpace_tower::{AdaptiveEndpoint, AdaptiveLayer};
 use std::cell::Cell;
 use std::future::Future;
@@ -179,29 +179,15 @@ impl Service<u64> for Held {
 }
 
 fn config(queue_capacity: usize, initial_rtt: Duration) -> EndpointConfig {
-    EndpointConfig {
-        queue_capacity,
-        max_inflight: 16,
-        latency: LatencyEstimatorConfig {
-            initial_rtt,
-            short_alpha: 1.0,
-            long_alpha: 1.0,
-            min_rtt: initial_rtt,
-            baseline_window: Duration::from_secs(60),
-        },
-        probe_schedule: ProbeSchedule {
-            positive_probability: 0.0,
-            negative_probability: 0.0,
-            ..ProbeSchedule::default()
-        },
-        ..EndpointConfig::default()
-    }
+    EndpointConfig::new(initial_rtt, 1)
+        .with_queue_capacity(queue_capacity)
+        .with_max_inflight(16)
 }
 
 #[tokio::test(start_paused = true)]
 async fn layer_wraps_services_that_are_send_but_not_sync() {
     let layer = AdaptiveLayer::new(config(2, Duration::from_millis(1)));
-    assert_eq!(layer.config().queue_capacity, 2);
+    assert_eq!(layer.config().queue_capacity(), 2);
 
     let endpoint = layer.layer(LocalEcho {
         calls: Cell::new(0),
@@ -363,151 +349,6 @@ async fn dropping_a_dispatched_request_records_abandonment_without_feedback() {
     assert_eq!(snapshot.completed, 0);
     assert_eq!(snapshot.failures, 1);
     assert_eq!(snapshot.inflight, 0);
-}
-
-#[tokio::test(start_paused = true)]
-async fn automatic_positive_probe_wakes_a_queued_dispatch() {
-    let started = Arc::new(Notify::new());
-    let release = Arc::new(Notify::new());
-    let starts = Arc::new(AtomicUsize::new(0));
-    let now = tokio::time::Instant::now().into_std();
-    let mut endpoint_config = config(2, Duration::from_secs(1));
-    endpoint_config.probe_schedule = ProbeSchedule {
-        positive_probability: 1.0,
-        negative_probability: 0.0,
-        positive_rate_delta: 1.0,
-        min_interval: Duration::from_secs(1),
-        max_interval: Duration::from_secs(1),
-        duration: Duration::from_secs(1),
-        ..ProbeSchedule::default()
-    };
-    let mut endpoint = AdaptiveEndpoint::new_at(
-        Held {
-            started: Arc::clone(&started),
-            release: Arc::clone(&release),
-            starts: Arc::clone(&starts),
-        },
-        endpoint_config,
-        now,
-    );
-
-    let first = tokio::spawn(endpoint.ready().await.unwrap().call(1));
-    started.notified().await;
-    tokio::time::advance(Duration::from_millis(100)).await;
-
-    let second = tokio::spawn(endpoint.ready().await.unwrap().call(2));
-    while endpoint.snapshot().queued != 1 {
-        tokio::task::yield_now().await;
-    }
-    tokio::task::yield_now().await;
-
-    tokio::time::advance(Duration::from_millis(400)).await;
-    tokio::task::yield_now().await;
-    assert_eq!(starts.load(Ordering::Relaxed), 1);
-
-    tokio::time::advance(Duration::from_millis(101)).await;
-    tokio::task::yield_now().await;
-    tokio::task::yield_now().await;
-    assert_eq!(starts.load(Ordering::Relaxed), 2);
-
-    release.notify_waiters();
-    assert_eq!(first.await.unwrap().unwrap(), 1);
-    assert_eq!(second.await.unwrap().unwrap(), 2);
-}
-
-#[tokio::test(start_paused = true)]
-async fn automatic_negative_probe_expiry_wakes_a_dispatch_to_recompute_the_slower_rate() {
-    let started = Arc::new(Notify::new());
-    let release = Arc::new(Notify::new());
-    let starts = Arc::new(AtomicUsize::new(0));
-    let now = tokio::time::Instant::now().into_std();
-    let mut endpoint_config = config(2, Duration::from_secs(1));
-    endpoint_config.probe_schedule = ProbeSchedule {
-        positive_probability: 0.0,
-        negative_probability: 1.0,
-        negative_factor: 0.5,
-        min_interval: Duration::from_secs(1),
-        max_interval: Duration::from_secs(1),
-        duration: Duration::from_millis(200),
-        ..ProbeSchedule::default()
-    };
-    let mut endpoint = AdaptiveEndpoint::new_at(
-        Held {
-            started: Arc::clone(&started),
-            release: Arc::clone(&release),
-            starts: Arc::clone(&starts),
-        },
-        endpoint_config,
-        now,
-    );
-
-    let first = tokio::spawn(endpoint.ready().await.unwrap().call(1));
-    started.notified().await;
-    tokio::time::advance(Duration::from_millis(100)).await;
-
-    let second = tokio::spawn(endpoint.ready().await.unwrap().call(2));
-    while endpoint.snapshot().queued != 1 {
-        tokio::task::yield_now().await;
-    }
-    tokio::task::yield_now().await;
-
-    tokio::time::advance(Duration::from_millis(200)).await;
-    tokio::task::yield_now().await;
-    tokio::time::advance(Duration::from_millis(700)).await;
-    tokio::task::yield_now().await;
-    assert_eq!(starts.load(Ordering::Relaxed), 1);
-
-    tokio::time::advance(Duration::from_millis(201)).await;
-    tokio::task::yield_now().await;
-    tokio::task::yield_now().await;
-    assert_eq!(starts.load(Ordering::Relaxed), 2);
-
-    release.notify_waiters();
-    assert_eq!(first.await.unwrap().unwrap(), 1);
-    assert_eq!(second.await.unwrap().unwrap(), 2);
-}
-
-#[tokio::test(start_paused = true)]
-async fn queued_demand_drives_automatic_probing() {
-    let started = Arc::new(Notify::new());
-    let release = Arc::new(Notify::new());
-    let starts = Arc::new(AtomicUsize::new(0));
-    let mut endpoint_config = config(2, Duration::from_secs(1));
-    endpoint_config.probe_schedule = ProbeSchedule {
-        positive_probability: 1.0,
-        negative_probability: 0.0,
-        min_interval: Duration::from_secs(1),
-        max_interval: Duration::from_secs(1),
-        duration: Duration::from_millis(100),
-        ..ProbeSchedule::default()
-    };
-    let mut endpoint = AdaptiveEndpoint::new_at(
-        Held {
-            started: Arc::clone(&started),
-            release: Arc::clone(&release),
-            starts: Arc::clone(&starts),
-        },
-        endpoint_config,
-        Instant::now(),
-    );
-
-    let first = tokio::spawn(endpoint.ready().await.unwrap().call(1));
-    started.notified().await;
-    let second = tokio::spawn(endpoint.ready().await.unwrap().call(2));
-    tokio::time::advance(Duration::from_secs(1)).await;
-    while endpoint.snapshot().active_probe.is_none() {
-        tokio::task::yield_now().await;
-    }
-
-    assert_eq!(starts.load(Ordering::Relaxed), 2);
-    assert!(matches!(
-        endpoint.snapshot().active_probe.unwrap().kind,
-        loadpace::ProbeKind::Positive { .. }
-    ));
-
-    release.notify_waiters();
-    assert_eq!(first.await.unwrap().unwrap(), 1);
-    assert_eq!(second.await.unwrap().unwrap(), 2);
 }
 
 #[tokio::test(start_paused = true)]
