@@ -141,8 +141,8 @@ impl LatencyEstimator {
         };
 
         let elapsed = now.saturating_duration_since(started);
-        let steps = (elapsed.as_nanos() / bucket_duration.as_nanos()) as usize;
-        if steps >= BASELINE_BUCKETS {
+        let steps = elapsed_bucket_count(elapsed, bucket_duration);
+        if steps >= BASELINE_BUCKETS as u128 {
             self.baseline_buckets = [f64::INFINITY; BASELINE_BUCKETS];
             self.baseline_bucket = 0;
             self.baseline_bucket_started = Some(now);
@@ -150,6 +150,7 @@ impl LatencyEstimator {
             return;
         }
 
+        let steps = steps as usize;
         if steps > 0 {
             for _ in 0..steps {
                 self.baseline_bucket = (self.baseline_bucket + 1) % BASELINE_BUCKETS;
@@ -165,4 +166,23 @@ impl LatencyEstimator {
 
 fn ewma(previous: f64, sample: f64, alpha: f64) -> f64 {
     previous + alpha * (sample - previous)
+}
+
+fn elapsed_bucket_count(elapsed: Duration, bucket_duration: Duration) -> u128 {
+    elapsed.as_nanos() / bucket_duration.as_nanos()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn huge_elapsed_bucket_counts_do_not_truncate_to_usize() {
+        let elapsed = Duration::new(18_446_744_073, 709_551_617);
+
+        assert_eq!(
+            elapsed_bucket_count(elapsed, Duration::from_nanos(1)),
+            u64::MAX as u128 + 2,
+        );
+    }
 }

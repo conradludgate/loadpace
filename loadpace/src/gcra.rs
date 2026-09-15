@@ -94,10 +94,35 @@ fn rate_to_interval(rate_per_second: f64) -> Duration {
 }
 
 pub(crate) fn saturating_add(instant: Instant, duration: Duration) -> Instant {
-    // `Instant` has no public maximum value. Retaining the current instant is
-    // the only representable saturation value when the platform clock range
-    // is exceeded.
-    instant.checked_add(duration).unwrap_or(instant)
+    if let Some(result) = instant.checked_add(duration) {
+        return result;
+    }
+
+    // `Instant` has no public maximum value. Find the furthest representable
+    // nanosecond offset instead of turning an overflowing future deadline
+    // into an immediately due one.
+    let mut lower = 0;
+    let mut upper = duration.as_nanos();
+    while lower < upper {
+        let middle = lower + (upper - lower).div_ceil(2);
+        if instant.checked_add(duration_from_nanos(middle)).is_some() {
+            lower = middle;
+        } else {
+            upper = middle - 1;
+        }
+    }
+
+    instant
+        .checked_add(duration_from_nanos(lower))
+        .expect("a zero-duration Instant addition must be representable")
+}
+
+fn duration_from_nanos(nanos: u128) -> Duration {
+    const NANOS_PER_SECOND: u128 = 1_000_000_000;
+    Duration::new(
+        (nanos / NANOS_PER_SECOND) as u64,
+        (nanos % NANOS_PER_SECOND) as u32,
+    )
 }
 
 fn duration_from_secs_saturating(seconds: f64) -> Duration {
@@ -111,5 +136,19 @@ fn duration_from_secs_saturating(seconds: f64) -> Duration {
     match Duration::try_from_secs_f64(seconds) {
         Ok(duration) => duration,
         Err(_) => Duration::MAX,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn overflowing_instant_addition_saturates_in_the_future() {
+        let now = Instant::now();
+        let saturated = saturating_add(now, Duration::MAX);
+
+        assert!(saturated > now);
+        assert!(saturated.checked_add(Duration::from_nanos(1)).is_none());
     }
 }
