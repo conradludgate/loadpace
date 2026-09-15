@@ -341,6 +341,31 @@ async fn endpoint_failures_are_not_treated_as_fast_healthy_work() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn dropping_a_dispatched_request_records_abandonment_without_feedback() {
+    let started = Arc::new(Notify::new());
+    let release = Arc::new(Notify::new());
+    let mut endpoint = AdaptiveEndpoint::new_at(
+        Held {
+            started: Arc::clone(&started),
+            release,
+            starts: Arc::new(AtomicUsize::new(0)),
+        },
+        config(1, Duration::from_millis(1)),
+        Instant::now(),
+    );
+
+    let request = tokio::spawn(endpoint.ready().await.unwrap().call(1));
+    started.notified().await;
+    request.abort();
+    assert!(request.await.unwrap_err().is_cancelled());
+
+    let snapshot = endpoint.snapshot();
+    assert_eq!(snapshot.completed, 0);
+    assert_eq!(snapshot.failures, 1);
+    assert_eq!(snapshot.inflight, 0);
+}
+
+#[tokio::test(start_paused = true)]
 async fn automatic_positive_probe_wakes_a_queued_dispatch() {
     let started = Arc::new(Notify::new());
     let release = Arc::new(Notify::new());

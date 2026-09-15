@@ -341,11 +341,25 @@ impl<O: EndpointOwner> RequestGuard<O> {
         }
         endpoint.dispatch.notify_waiters();
     }
+
+    fn abandon(&mut self, now: Instant) {
+        let endpoint = self.owner.endpoint_state();
+        match std::mem::replace(&mut self.state, RequestState::Finished) {
+            RequestState::Dispatched(active) => {
+                lock(&endpoint.controller).on_abandoned(active, now);
+            }
+            RequestState::Reserved(reservation) => {
+                lock(&endpoint.controller).cancel(reservation, now);
+            }
+            RequestState::Finished => return,
+        }
+        endpoint.dispatch.notify_waiters();
+    }
 }
 
 impl<O: EndpointOwner> Drop for RequestGuard<O> {
     fn drop(&mut self) {
-        self.finish(Outcome::Failure, now());
+        self.abandon(now());
     }
 }
 

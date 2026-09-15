@@ -221,7 +221,7 @@ async fn endpoint_maps_inner_errors_and_updates_controller() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn dropping_a_dispatched_request_records_a_failure() {
+async fn dropping_a_dispatched_request_records_abandonment_without_feedback() {
     let started = Arc::new(Notify::new());
     let release = Arc::new(Notify::new());
     let endpoint = AdaptiveEndpoint::new_at(
@@ -241,7 +241,7 @@ async fn dropping_a_dispatched_request_records_a_failure() {
     let _ = request.await;
 
     let snapshot = endpoint.snapshot();
-    assert_eq!(snapshot.completed, 1);
+    assert_eq!(snapshot.completed, 0);
     assert_eq!(snapshot.failures, 1);
     assert_eq!(snapshot.inflight, 0);
 }

@@ -346,6 +346,28 @@ impl<S> PendingRequest<S> {
         self.shared.dispatch.notify_waiters();
     }
 
+    fn abandon(&mut self, now: Instant) {
+        match std::mem::replace(&mut self.state, RequestState::Finished) {
+            RequestState::InFlight(active) => {
+                lock(&self.shared.controller)
+                    .controller
+                    .on_abandoned(active, now);
+            }
+            RequestState::Queued(reservation) => {
+                let admission_waker = {
+                    let mut state = lock(&self.shared.controller);
+                    state.controller.cancel(reservation, now);
+                    state.take_admission_waker()
+                };
+                if let Some(waker) = admission_waker {
+                    waker.wake();
+                }
+            }
+            RequestState::Finished => return,
+        }
+        self.shared.dispatch.notify_waiters();
+    }
+
     async fn wait_until_dispatchable(&self) {
         let reservation = self.reservation();
         loop {
@@ -452,6 +474,6 @@ impl<S> PendingRequest<S> {
 
 impl<S> Drop for PendingRequest<S> {
     fn drop(&mut self) {
-        self.finish(Outcome::Failure, now());
+        self.abandon(now());
     }
 }
