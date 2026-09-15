@@ -138,7 +138,7 @@ fn gradient2_preserves_fractional_concurrency_and_reacts_to_congestion() {
         initial_concurrency: 1.3,
         min_concurrency: 0.25,
         max_concurrency: 20.0,
-        tolerance: 1.0,
+        queue_tolerance: Duration::ZERO,
         gain: 0.1,
         smoothing: 1.0,
         update_interval: Duration::from_secs(1),
@@ -223,6 +223,30 @@ fn gradient2_update_count_is_stable_across_sample_rates() {
 }
 
 #[test]
+fn gradient2_uses_an_absolute_queue_delay_tolerance() {
+    fn update(baseline: Duration) -> f64 {
+        let mut gradient = Gradient2::new(Gradient2Config {
+            queue_tolerance: Duration::from_millis(25),
+            smoothing: 1.0,
+            ..Gradient2Config::default()
+        });
+        assert!(gradient.on_rtt_with_baseline_at(
+            baseline + Duration::from_millis(25),
+            baseline,
+            1,
+            true,
+            at_zero(),
+        ));
+        gradient.concurrency()
+    }
+
+    assert_eq!(
+        update(Duration::from_millis(10)),
+        update(Duration::from_millis(100)),
+    );
+}
+
+#[test]
 fn gradient2_does_not_grow_when_application_limited() {
     let mut gradient = Gradient2::new(Gradient2Config::default());
     let initial = gradient.concurrency();
@@ -241,7 +265,15 @@ fn gradient2_does_not_grow_when_application_limited() {
 #[test]
 fn controller_marks_future_slots_as_paced() {
     let now = at_zero();
-    let mut controller = EndpointController::new(EndpointConfig::default(), now);
+    let config = EndpointConfig {
+        probe_schedule: ProbeSchedule {
+            positive_probability: 0.0,
+            negative_probability: 0.0,
+            ..ProbeSchedule::default()
+        },
+        ..EndpointConfig::default()
+    };
+    let mut controller = EndpointController::new(config, now);
 
     let first_reservation = controller.reserve(now).unwrap();
     let first = controller

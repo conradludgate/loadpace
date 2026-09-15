@@ -10,8 +10,8 @@ pub struct Gradient2Config {
     pub min_concurrency: f64,
     /// Upper bound for the virtual concurrency.
     pub max_concurrency: f64,
-    /// RTT inflation tolerated before reducing the operating point.
-    pub tolerance: f64,
+    /// Absolute queueing delay tolerated before reducing the operating point.
+    pub queue_tolerance: Duration,
     /// Additive queue allowance used when latency is healthy.
     pub gain: f64,
     /// Smoothing applied to each new operating-point estimate.
@@ -28,7 +28,7 @@ impl Default for Gradient2Config {
             initial_concurrency: 1.0,
             min_concurrency: 0.25,
             max_concurrency: 1024.0,
-            tolerance: 1.5,
+            queue_tolerance: Duration::from_millis(25),
             gain: 0.1,
             smoothing: 0.2,
             update_interval: Duration::from_millis(100),
@@ -56,8 +56,8 @@ impl Gradient2 {
     ///
     /// # Panics
     ///
-    /// Panics when the concurrency bounds, tolerance, gain, smoothing,
-    /// update interval, or failure factor is invalid.
+    /// Panics when the concurrency bounds, gain, smoothing, update interval,
+    /// or failure factor is invalid.
     pub fn new(config: Gradient2Config) -> Self {
         assert!(
             config.min_concurrency.is_finite()
@@ -72,11 +72,8 @@ impl Gradient2 {
             "initial concurrency must be within the Gradient2 bounds"
         );
         assert!(
-            config.tolerance.is_finite()
-                && config.tolerance >= 1.0
-                && config.gain.is_finite()
-                && config.gain > 0.0,
-            "Gradient2 tolerance must be finite and >= 1 and gain must be positive"
+            config.gain.is_finite() && config.gain > 0.0,
+            "Gradient2 gain must be finite and positive"
         );
         assert!(
             config.smoothing.is_finite()
@@ -207,7 +204,8 @@ impl Gradient2 {
         // Bound the gradient so a single outlier cannot halve the limit more
         // than once, while a healthy sample can recover toward the current
         // operating point.
-        let gradient = (self.config.tolerance * reference_rtt / current_rtt).clamp(0.5, 1.0);
+        let tolerated_rtt = reference_rtt + self.config.queue_tolerance.as_secs_f64();
+        let gradient = (tolerated_rtt / current_rtt).clamp(0.5, 1.0);
         self.last_gradient = gradient;
         if self
             .next_update_at

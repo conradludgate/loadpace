@@ -510,5 +510,5 @@ fn clients_with_heterogeneous_network_rtt_all_make_progress() {
             .all(|completed| *completed > 0),
         "{report:?}"
     );
-    assert!(jain(&report.client_completed) > 0.8, "{report:?}");
+    assert!(jain(&report.client_completed) > 0.95, "{report:?}");
 }
