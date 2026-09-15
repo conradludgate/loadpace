@@ -18,6 +18,7 @@ use std::time::{Duration, Instant};
 struct ClientSpec {
     join_at: Duration,
     offered_rate: f64,
+    network_rtt: Duration,
     config: EndpointConfig,
 }
 
@@ -33,6 +34,7 @@ struct ClientRuntime {
     config: EndpointConfig,
     active: bool,
     arrival_phase: Duration,
+    network_rtt: Duration,
     next_arrival: Option<Instant>,
     controllers: Vec<EndpointController>,
     pending: Vec<VecDeque<DispatchReservation>>,
@@ -48,6 +50,15 @@ struct ServerRuntime {
 struct Completion {
     at: Instant,
     dispatched_at: Instant,
+    client: usize,
+    server: usize,
+    request: InFlightRequest,
+}
+
+struct ServerArrival {
+    at: Instant,
+    dispatched_at: Instant,
+    response_delay: Duration,
     client: usize,
     server: usize,
     request: InFlightRequest,
@@ -109,12 +120,17 @@ fn run(
                 config: client.config.clone(),
                 active: client.join_at.is_zero(),
                 arrival_phase,
+                network_rtt: client.network_rtt,
                 next_arrival: client.join_at.is_zero().then_some(join_at + arrival_phase),
                 controllers: initial_servers
                     .iter()
                     .map(|server| {
                         EndpointController::new_with_seed(
-                            endpoint_config(&client.config, server.service_time),
+                            endpoint_config(
+                                &client.config,
+                                server.service_time,
+                                client.network_rtt,
+                            ),
                             start.max(join_at),
                             1000 + client_index as u64,
                         )
@@ -128,6 +144,7 @@ fn run(
         })
         .collect();
     let mut completions: Vec<Completion> = Vec::new();
+    let mut server_arrivals: Vec<ServerArrival> = Vec::new();
     let mut rng = StdRng::seed_from_u64(42);
     let mut pending_server_join = server_join.map(|(at, spec)| (start + at, spec));
 
@@ -161,11 +178,13 @@ fn run(
             }
         }
         let next_completion = completions.iter().map(|completion| completion.at).min();
+        let next_server_arrival = server_arrivals.iter().map(|arrival| arrival.at).min();
         let next_server = pending_server_join.as_ref().map(|(at, _)| *at);
         let Some(now) = [
             next_arrival,
             next_join,
             next_dispatch,
+            next_server_arrival,
             next_completion,
             next_server,
         ]
@@ -190,7 +209,7 @@ fn run(
             });
             for (client_index, client) in runtimes.iter_mut().enumerate() {
                 client.controllers.push(EndpointController::new_with_seed(
-                    endpoint_config(&client.config, server.service_time),
+                    endpoint_config(&client.config, server.service_time, client.network_rtt),
                     now,
                     1000 + client_index as u64,
                 ));
@@ -231,6 +250,33 @@ fn run(
             }
         }
         completions = remaining;
+
+        let mut remaining = Vec::with_capacity(server_arrivals.len());
+        for arrival in server_arrivals.drain(..) {
+            if arrival.at <= now {
+                let server = &mut servers[arrival.server];
+                let worker = server
+                    .available_at
+                    .iter()
+                    .enumerate()
+                    .min_by_key(|(_, available_at)| **available_at)
+                    .expect("server must have a worker")
+                    .0;
+                let service_done =
+                    server.available_at[worker].max(arrival.at) + server.service_time;
+                server.available_at[worker] = service_done;
+                completions.push(Completion {
+                    at: service_done + arrival.response_delay,
+                    dispatched_at: arrival.dispatched_at,
+                    client: arrival.client,
+                    server: arrival.server,
+                    request: arrival.request,
+                });
+            } else {
+                remaining.push(arrival);
+            }
+        }
+        server_arrivals = remaining;
 
         for client in &mut runtimes {
             let Some(next_arrival) = client.next_arrival else {
@@ -287,20 +333,12 @@ fn run(
                     let request = controller
                         .on_dispatched(reservation, now)
                         .expect("ready reservation must dispatch");
-                    let server = &mut servers[server_index];
-                    let worker = server
-                        .available_at
-                        .iter()
-                        .enumerate()
-                        .min_by_key(|(_, available_at)| **available_at)
-                        .expect("server must have a worker")
-                        .0;
                     let dispatched_at = now;
-                    let completion_at = server.available_at[worker].max(now) + server.service_time;
-                    server.available_at[worker] = completion_at;
-                    completions.push(Completion {
-                        at: completion_at,
+                    let one_way_delay = client.network_rtt / 2;
+                    server_arrivals.push(ServerArrival {
+                        at: now + one_way_delay,
                         dispatched_at,
+                        response_delay: one_way_delay,
                         client: client_index,
                         server: server_index,
                         request,
@@ -339,10 +377,15 @@ fn fairness_probe_schedule() -> loadpace::ProbeSchedule {
     }
 }
 
-fn endpoint_config(base: &EndpointConfig, service_time: Duration) -> EndpointConfig {
+fn endpoint_config(
+    base: &EndpointConfig,
+    service_time: Duration,
+    network_rtt: Duration,
+) -> EndpointConfig {
     let mut config = base.clone();
-    config.latency.initial_rtt = service_time;
-    config.latency.min_rtt = service_time;
+    let uncongested_rtt = service_time + network_rtt;
+    config.latency.initial_rtt = uncongested_rtt;
+    config.latency.min_rtt = uncongested_rtt;
     config
 }
 
@@ -357,6 +400,7 @@ fn client_specs(count: usize, join_at: Duration) -> Vec<ClientSpec> {
         .map(|_| ClientSpec {
             join_at,
             offered_rate: 1_000.0,
+            network_rtt: Duration::ZERO,
             config: config(Duration::from_millis(10)),
         })
         .collect()
@@ -443,4 +487,28 @@ fn fairness_measurements_are_reproducible_with_the_same_seed() {
     );
 
     assert_eq!(first, second);
+}
+
+#[test]
+fn clients_with_heterogeneous_network_rtt_all_make_progress() {
+    let mut clients = client_specs(8, Duration::ZERO);
+    for client in &mut clients[4..] {
+        client.network_rtt = Duration::from_millis(90);
+    }
+    let report = run(
+        clients,
+        vec![server(4)],
+        None,
+        Duration::from_secs(30),
+        Duration::from_secs(60),
+    );
+
+    assert!(
+        report
+            .client_completed
+            .iter()
+            .all(|completed| *completed > 0),
+        "{report:?}"
+    );
+    assert!(jain(&report.client_completed) > 0.8, "{report:?}");
 }
