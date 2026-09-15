@@ -64,7 +64,11 @@ impl EndpointConfig {
 pub enum Outcome {
     /// The response represents healthy work for this endpoint.
     Success,
-    /// The response, transport error, timeout, or cancellation is unhealthy.
+    /// Endpoint feedback indicates an unhealthy response or transport error.
+    ///
+    /// Use [`EndpointController::on_abandoned`] instead when a request ends
+    /// without receiving endpoint feedback, such as after cancellation or a
+    /// client-side timeout.
     Failure,
 }
 
@@ -121,6 +125,12 @@ struct PendingReservation {
     was_paced: bool,
 }
 
+#[derive(Clone, Copy, Debug)]
+struct FeedbackEpoch {
+    last_feedback_at: Instant,
+    expected_rtt: Duration,
+}
+
 /// A point-in-time view useful for metrics, tests, and P2C load prediction.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ControllerSnapshot {
@@ -138,7 +148,18 @@ pub struct ControllerSnapshot {
     pub effective_concurrency: f64,
     /// Requests per second derived from target concurrency and expected RTT.
     pub base_rate: f64,
-    /// Current requests per second after applying an active probe, if any.
+    /// Requests per second after applying an active probe, if any.
+    pub probed_rate: f64,
+    /// Time elapsed since the current inflight epoch last received feedback.
+    ///
+    /// This is [`None`] when the endpoint has no inflight requests.
+    pub feedback_silence: Option<Duration>,
+    /// Exponential rate multiplier caused by missing feedback.
+    ///
+    /// The multiplier is `1.0` for the first expected RTT of silence, then
+    /// halves for every additional expected RTT without feedback.
+    pub feedback_factor: f64,
+    /// Current requests per second after probes and missing-feedback decay.
     pub effective_rate: f64,
     /// The GCRA theoretical arrival time committed by actual dispatches.
     pub committed_tat: Instant,
@@ -156,7 +177,8 @@ pub struct ControllerSnapshot {
     pub max_inflight: usize,
     /// Number of dispatched requests reported as completed.
     pub completed: u64,
-    /// Number of unhealthy completions and transport admission failures.
+    /// Number of unhealthy completions, abandoned requests, and transport
+    /// admission failures.
     pub failures: u64,
     /// Number of successful RTT samples observed by the latency estimator.
     pub latency_samples: u64,
@@ -182,6 +204,7 @@ pub struct EndpointController {
     inflight: usize,
     completed: u64,
     failures: u64,
+    feedback_epoch: Option<FeedbackEpoch>,
     probe_rng: StdRng,
 }
 
@@ -233,6 +256,7 @@ impl EndpointController {
             inflight: 0,
             completed: 0,
             failures: 0,
+            feedback_epoch: None,
             probe_rng,
         }
     }
@@ -412,6 +436,12 @@ impl EndpointController {
             .pop_front()
             .expect("ready reservation must be at the front of the queue");
         debug_assert_eq!(pending.id, reservation.id);
+        if self.inflight == 0 {
+            self.feedback_epoch = Some(FeedbackEpoch {
+                last_feedback_at: now,
+                expected_rtt: self.latency.expected_rtt(),
+            });
+        }
         self.inflight += 1;
         self.pacer.commit(now);
         self.rebuild_virtual_queue(now);
@@ -468,6 +498,35 @@ impl EndpointController {
         }
 
         self.inflight -= 1;
+        self.feedback_epoch = (self.inflight > 0).then(|| FeedbackEpoch {
+            last_feedback_at: now,
+            expected_rtt: self.latency.expected_rtt(),
+        });
+        self.update_rate(now);
+        true
+    }
+
+    /// Records a dispatched request that ended without endpoint feedback.
+    ///
+    /// Abandonment releases inflight accounting and penalizes the learned
+    /// operating point, but does not reset the missing-feedback clock while
+    /// other requests remain inflight. This is appropriate for cancellation
+    /// and timeouts where no response was observed.
+    ///
+    /// Returns `false` without changing state when `request` belongs to another
+    /// controller. Returns `true` after consuming a request owned by this one.
+    pub fn on_abandoned(&mut self, request: InFlightRequest, now: Instant) -> bool {
+        if request.controller_id != self.controller_id {
+            return false;
+        }
+
+        debug_assert!(self.inflight > 0);
+        self.failures += 1;
+        self.gradient.on_failure_at(now);
+        self.inflight -= 1;
+        if self.inflight == 0 {
+            self.feedback_epoch = None;
+        }
         self.update_rate(now);
         true
     }
@@ -534,8 +593,7 @@ impl EndpointController {
         self.refresh(now);
         let target = self.gradient.concurrency();
         let expected = self.latency.expected_rtt().as_secs_f64();
-        let base_rate = target / expected;
-        let effective_rate = self.probe.effective_rate(base_rate, now);
+        let (base_rate, probed_rate, feedback_factor, effective_rate) = self.rates_at(now);
         let effective = effective_rate * expected;
 
         ControllerSnapshot {
@@ -546,6 +604,11 @@ impl EndpointController {
             target_concurrency: target,
             effective_concurrency: effective,
             base_rate,
+            probed_rate,
+            feedback_silence: self
+                .feedback_epoch
+                .map(|epoch| now.saturating_duration_since(epoch.last_feedback_at)),
+            feedback_factor,
             effective_rate,
             committed_tat: self.pacer.tat(),
             virtual_tail_tat: self
@@ -586,9 +649,7 @@ impl EndpointController {
     }
 
     fn update_rate(&mut self, now: Instant) {
-        let target = self.gradient.concurrency();
-        let base_rate = target / self.latency.expected_rtt().as_secs_f64();
-        let rate = self.probe.effective_rate(base_rate, now);
+        let (_, _, _, rate) = self.rates_at(now);
         let previous_interval = self.pacer.interval();
         self.pacer.set_rate(rate, now);
         let next = self.pacer.next_at(now);
@@ -599,6 +660,32 @@ impl EndpointController {
         if self.pacer.interval() != previous_interval || virtual_head_expired {
             self.rebuild_virtual_queue(now);
         }
+    }
+
+    fn rates_at(&mut self, now: Instant) -> (f64, f64, f64, f64) {
+        let base_rate = self.gradient.concurrency() / self.latency.expected_rtt().as_secs_f64();
+        let probed_rate = self.probe.effective_rate(base_rate, now);
+        let feedback_factor = self.feedback_factor(now, probed_rate);
+        let effective_rate = probed_rate * feedback_factor;
+        (base_rate, probed_rate, feedback_factor, effective_rate)
+    }
+
+    fn feedback_factor(&self, now: Instant, rate: f64) -> f64 {
+        let Some(epoch) = self.feedback_epoch else {
+            return 1.0;
+        };
+        let silence = now.saturating_duration_since(epoch.last_feedback_at);
+        let excess = silence.saturating_sub(epoch.expected_rtt);
+        if excess.is_zero() {
+            return 1.0;
+        }
+
+        let half_lives = excess.as_secs_f64() / epoch.expected_rtt.as_secs_f64();
+        let factor = (-half_lives).exp2();
+        // Keep GCRA's interval representable even after extreme silence. This
+        // is effectively zero traffic while remaining a smooth rate decay.
+        let minimum_rate = Duration::MAX.as_secs_f64().recip() * 2.0;
+        factor.max((minimum_rate / rate).min(1.0))
     }
 
     fn rebuild_virtual_queue(&mut self, now: Instant) {

@@ -634,6 +634,179 @@ fn controller_records_admission_failures_without_inflight_work() {
     assert!(snapshot.target_concurrency < initial_target);
 }
 
+fn no_probe_config(initial_rtt: Duration, initial_concurrency: f64) -> EndpointConfig {
+    EndpointConfig {
+        queue_capacity: 4,
+        max_inflight: 1024,
+        latency: LatencyEstimatorConfig {
+            initial_rtt,
+            min_rtt: initial_rtt,
+            ..LatencyEstimatorConfig::default()
+        },
+        gradient: Gradient2Config {
+            initial_concurrency,
+            max_concurrency: initial_concurrency.max(100.0),
+            ..Gradient2Config::default()
+        },
+        probe_schedule: ProbeSchedule {
+            positive_probability: 0.0,
+            negative_probability: 0.0,
+            ..ProbeSchedule::default()
+        },
+    }
+}
+
+#[test]
+fn controller_halves_its_rate_for_each_expected_rtt_without_feedback() {
+    let now = at_zero();
+    let initial_rtt = Duration::from_millis(20);
+    let mut controller = EndpointController::new(no_probe_config(initial_rtt, 32.0), now);
+    let reservation = controller.reserve(now).unwrap();
+    let request = controller.on_dispatched(reservation, now).unwrap();
+
+    let at_grace = controller.snapshot(now + initial_rtt);
+    assert_eq!(at_grace.feedback_silence, Some(initial_rtt));
+    assert_eq!(at_grace.feedback_factor, 1.0);
+    assert_eq!(at_grace.effective_rate, 1_600.0);
+
+    let at_one_half_life = controller.snapshot(now + initial_rtt * 2);
+    assert_eq!(at_one_half_life.feedback_factor, 0.5);
+    assert_eq!(at_one_half_life.effective_rate, 800.0);
+
+    let at_two_half_lives = controller.snapshot(now + initial_rtt * 3);
+    assert_eq!(at_two_half_lives.feedback_factor, 0.25);
+    assert_eq!(at_two_half_lives.effective_rate, 400.0);
+
+    assert!(controller.on_complete(
+        request,
+        Outcome::Success,
+        initial_rtt * 3,
+        now + initial_rtt * 3,
+    ));
+    let recovered = controller.snapshot(now + initial_rtt * 3);
+    assert_eq!(recovered.feedback_silence, None);
+    assert_eq!(recovered.feedback_factor, 1.0);
+}
+
+#[test]
+fn controller_uses_recent_feedback_instead_of_the_oldest_request_age() {
+    let now = at_zero();
+    let initial_rtt = Duration::from_millis(20);
+    let mut controller = EndpointController::new(no_probe_config(initial_rtt, 32.0), now);
+
+    let straggler = controller.reserve(now).unwrap();
+    let straggler = controller.on_dispatched(straggler, now).unwrap();
+    let later = controller.reserve(now).unwrap();
+    let later_at = now + controller.pacer().interval();
+    let later = controller.on_dispatched(later, later_at).unwrap();
+    let feedback_at = now + Duration::from_millis(50);
+    assert!(controller.on_complete(later, Outcome::Success, feedback_at - later_at, feedback_at,));
+
+    let snapshot = controller.snapshot(feedback_at + initial_rtt);
+    assert_eq!(snapshot.inflight, 1);
+    assert_eq!(snapshot.feedback_silence, Some(initial_rtt));
+    assert_eq!(snapshot.feedback_factor, 1.0);
+
+    assert!(controller.on_abandoned(straggler, feedback_at + initial_rtt));
+}
+
+#[test]
+fn abandonment_does_not_count_as_feedback_while_other_work_is_inflight() {
+    let now = at_zero();
+    let initial_rtt = Duration::from_millis(20);
+    let mut controller = EndpointController::new(no_probe_config(initial_rtt, 32.0), now);
+
+    let first = controller.reserve(now).unwrap();
+    let first = controller.on_dispatched(first, now).unwrap();
+    let second = controller.reserve(now).unwrap();
+    let second_at = now + controller.pacer().interval();
+    let second = controller.on_dispatched(second, second_at).unwrap();
+    let abandoned_at = now + initial_rtt * 2;
+
+    assert!(controller.on_abandoned(first, abandoned_at));
+    let snapshot = controller.snapshot(abandoned_at);
+    assert_eq!(snapshot.completed, 0);
+    assert_eq!(snapshot.failures, 1);
+    assert_eq!(snapshot.feedback_silence, Some(initial_rtt * 2));
+    assert_eq!(snapshot.feedback_factor, 0.5);
+
+    assert!(controller.on_abandoned(second, abandoned_at));
+    assert_eq!(controller.snapshot(abandoned_at).feedback_silence, None);
+}
+
+#[test]
+fn blackholed_endpoint_keeps_dispatching_but_bounds_exposure() {
+    let now = at_zero();
+    let initial_rtt = Duration::from_millis(20);
+    let initial_concurrency = 32.0;
+    let mut config = no_probe_config(initial_rtt, initial_concurrency);
+    config.queue_capacity = 1;
+    let mut controller = EndpointController::new(config, now);
+    let end = now + Duration::from_secs(1);
+    let mut cursor = now;
+    let mut dispatches = Vec::new();
+
+    while cursor <= end {
+        let reservation = controller.reserve(cursor).unwrap();
+        cursor = match controller.dispatch_state(reservation, cursor) {
+            DispatchState::Ready => cursor,
+            DispatchState::WaitUntil(at) => at,
+            state => panic!("unexpected dispatch state: {state:?}"),
+        };
+        if cursor > end {
+            assert!(controller.cancel(reservation, end));
+            break;
+        }
+        controller.on_dispatched(reservation, cursor).unwrap();
+        dispatches.push(cursor);
+    }
+
+    assert!(dispatches.len() > initial_concurrency as usize);
+    assert!(
+        dispatches.len() < 90,
+        "exponential decay should bound blackhole exposure: {dispatches:?}"
+    );
+    assert!(
+        dispatches
+            .windows(2)
+            .map(|pair| pair[1] - pair[0])
+            .is_sorted(),
+        "dispatch spacing should increase monotonically once feedback stops"
+    );
+    assert!(controller.snapshot(end).effective_rate < 1e-10);
+}
+
+#[test]
+fn endpoint_recovers_immediately_when_feedback_resumes() {
+    let now = at_zero();
+    let initial_rtt = Duration::from_millis(20);
+    let mut controller = EndpointController::new(no_probe_config(initial_rtt, 32.0), now);
+    let mut requests = Vec::new();
+    let mut cursor = now;
+
+    for _ in 0..4 {
+        let reservation = controller.reserve(cursor).unwrap();
+        cursor = match controller.dispatch_state(reservation, cursor) {
+            DispatchState::Ready => cursor,
+            DispatchState::WaitUntil(at) => at,
+            state => panic!("unexpected dispatch state: {state:?}"),
+        };
+        requests.push(controller.on_dispatched(reservation, cursor).unwrap());
+    }
+
+    let feedback_at = now + initial_rtt * 4;
+    assert!(controller.snapshot(feedback_at).feedback_factor <= 0.125);
+    let completed = requests.pop().unwrap();
+    let latency = feedback_at.saturating_duration_since(completed.dispatched_at());
+    assert!(controller.on_complete(completed, Outcome::Success, latency, feedback_at,));
+
+    let recovered = controller.snapshot(feedback_at);
+    assert_eq!(recovered.inflight, requests.len());
+    assert_eq!(recovered.feedback_silence, Some(Duration::ZERO));
+    assert_eq!(recovered.feedback_factor, 1.0);
+    assert_eq!(recovered.effective_rate, recovered.probed_rate);
+}
+
 #[test]
 fn controller_exposes_its_configured_components() {
     let now = at_zero();
