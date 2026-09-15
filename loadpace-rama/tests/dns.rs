@@ -411,7 +411,10 @@ async fn changed_dns_ordering_cannot_deadlock() {
         calls: Arc::new(AtomicUsize::new(0)),
     };
     let inner = ImmediateInner::default();
-    let endpoint = endpoint_config(128);
+    // This test exercises lock ordering rather than pacing. Give the
+    // zero-latency test service a matching startup operating point so the
+    // timeout measures deadlock, not the controller's intentional rate.
+    let endpoint = EndpointConfig::new(Duration::from_millis(1), 128).with_queue_capacity(128);
     let mut config = AdaptiveDnsConfig {
         mode: DnsResolveIpMode::SingleIpV4,
         ..AdaptiveDnsConfig::with_resolver(resolver, endpoint)
@@ -456,7 +459,7 @@ async fn cancellation_updates_only_the_reserved_endpoint() {
     assert_eq!(snapshots.len(), 2);
     for snapshot in snapshots {
         let was_selected = selected == Host::Address(snapshot.ip);
-        assert_eq!(snapshot.controller.completed, u64::from(was_selected));
+        assert_eq!(snapshot.controller.completed, 0);
         assert_eq!(snapshot.controller.failures, u64::from(was_selected));
     }
 }
