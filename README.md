@@ -37,6 +37,21 @@ Loadpace treats client-side load balancing as a control problem:
 > **Experimental:** the API and controller constants are still expected to
 > evolve as the simulator and real workloads teach us more.
 
+## Intended deployment model
+
+Loadpace is designed for trusted microservice deployments where you control
+the clients sharing a service and can run compatible congestion-control logic
+on all of them. Its fairness probes and latency feedback assume cooperative
+clients. A client that ignores pacing can take capacity from the clients that
+participate, so the algorithm cannot enforce fairness against arbitrary or
+malicious callers.
+
+Loadpace is therefore not the primary protection for a general-purpose public
+API. It does not replace server-enforced rate limits, tenant quotas,
+authentication, abuse prevention, or DDoS mitigation. Those controls belong at
+a trusted server or ingress boundary; Loadpace can then coordinate the trusted
+clients behind that boundary.
+
 ## Start here
 
 The documentation is organised using [Diátaxis](https://diataxis.fr/): each

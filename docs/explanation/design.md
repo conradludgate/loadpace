@@ -13,6 +13,27 @@ Loadpace gives every endpoint an independent feedback loop, so the client can
 use newly available capacity while slowing down endpoints whose latency shows
 that their work is queuing.
 
+## Why the clients must cooperate
+
+Loadpace is a cooperative congestion-control algorithm for trusted
+microservice deployments. Each client infers available capacity from latency
+and outcomes, then voluntarily paces its own traffic. Temporary probes help
+clients move away from an unfair equilibrium, but they do not reserve or
+enforce a share of the endpoint.
+
+That model works when one operator controls the clients sharing a private
+service and can deploy compatible behavior across the fleet. It does not work
+as a fairness or security boundary when arbitrary clients can choose whether
+to participate. An unpaced client can consume newly available capacity faster,
+distort the latency signal seen by cooperative clients, and force those clients
+to yield while it continues sending.
+
+For a general-purpose public API, enforce authentication, per-tenant quotas,
+rate limits, overload protection, and abuse or DDoS controls at a trusted
+server or ingress boundary. Loadpace can still be useful behind that boundary
+to coordinate trusted proxies or service clients; it does not replace the
+boundary itself.
+
 ## Per-endpoint control
 
 Every endpoint owns independent state:

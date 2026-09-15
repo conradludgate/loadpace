@@ -4,6 +4,11 @@ In this tutorial we will wrap a small Tower service in Loadpace and send a
 request through it. At the end, the service will have an adaptive controller
 that paces future requests and records endpoint observations.
 
+This tutorial assumes a trusted microservice deployment where you control the
+clients sharing the endpoint. Loadpace is not a server-enforced rate limit for
+untrusted public traffic; see the [design explanation](explanation/design.md#why-the-clients-must-cooperate)
+for the boundary and its rationale.
+
 ## Create a project
 
 Create a binary crate and add these dependencies:

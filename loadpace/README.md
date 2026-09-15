@@ -23,6 +23,17 @@ combines RTT estimation, fractional Gradient2 feedback, Little's Law, GCRA
 pacing, virtual queue prediction, and controller-driven temporary fairness
 probes without depending on an async runtime or service framework.
 
+## Intended deployment model
+
+This crate is for trusted microservice clients sharing private endpoints. Its
+feedback and fairness behavior assumes those clients cooperate and run
+compatible control logic. An unpaced or malicious client can consume capacity
+without participating in the algorithm.
+
+Do not use Loadpace as the primary rate limit, quota system, abuse-prevention
+boundary, or DDoS defense for a general-purpose public API. Enforce those
+policies at the server or another trusted ingress boundary.
+
 ```toml
 [dependencies]
 loadpace = "0.1"

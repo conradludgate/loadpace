@@ -16,6 +16,17 @@ learned operating point, and exposes predicted completion cost for a higher-
 level balancer. This gives Rama applications the same adaptive control as the
 Tower integration while fitting Rama's direct `serve` model.
 
+## Intended deployment model
+
+This adapter is for trusted microservice clients sharing private service
+endpoints. Congestion control assumes the other clients cooperate and run
+compatible pacing logic; it cannot enforce fairness against an unpaced or
+malicious peer.
+
+It is not a primary rate limit, quota system, abuse-prevention boundary, or
+DDoS defense for a general-purpose public API. Keep those controls at the
+server or another trusted ingress boundary.
+
 ## Usage
 
 ```toml

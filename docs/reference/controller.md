@@ -7,6 +7,14 @@ The crate targets the Rust 2024 Edition and requires Rust 1.85 or newer. It
 has no async-runtime or framework dependency. Framework adapters are published
 separately; see the [Tower adapter reference](tower.md).
 
+## Deployment contract
+
+The controller assumes that clients sharing an endpoint are trusted and run
+compatible congestion-control behavior. It provides cooperative pacing and
+backpressure, not protection against clients that ignore the algorithm. It is
+not a server-enforced public API rate limit, quota, or abuse-prevention
+boundary.
+
 ## `EndpointConfig`
 
 | Field | Default | Meaning |

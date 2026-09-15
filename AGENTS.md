@@ -21,6 +21,9 @@ independent of async runtimes and frameworks.
 - Keep GCRA as the normal pacing actuator; the inflight cap is an emergency
   safety limit.
 - Preserve fractional controller values and deterministic simulator behavior.
+- Preserve the documented deployment boundary: Loadpace coordinates trusted,
+  cooperative microservice clients and is not protection for untrusted public
+  API traffic.
 - Keep the crates free of unsafe code. Each library crate forbids unsafe code.
 - Prefer standard-library or small, well-established dependencies. Use
   `pin_project_lite` for custom pinned futures rather than writing unsafe pin
@@ -56,6 +59,11 @@ cargo llvm-cov -p loadpace --all-targets --summary-only --fail-under-lines 95
 
 Use coverage to find missing behavior checks; do not add brittle tests solely
 to execute unreachable defensive branches.
+
+Each library crate warns on missing public-item documentation. Keep public
+rustdoc complete and preserve the Diátaxis split in `docs/`: tutorial for
+learning, how-to guides for tasks, reference for lookup, and explanation for
+design rationale.
 
 ## Git workflow
 
