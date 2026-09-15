@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0-rc.4](https://github.com/conradludgate/loadpace/compare/loadpace-v0.1.0-rc.3...loadpace-v0.1.0-rc.4) - 2026-09-15
+
+### Added
+
+- *(core)* make probing controller driven
+
+### Fixed
+
+- *(probes)* add positive probes in rate space
+- *(gradient)* use absolute queue tolerance
+- *(core)* saturate extreme time arithmetic
+- *(controller)* record observed pacing waits
+- *(simulator)* advance sub-nanosecond arrivals
+
+### Other
+
+- *(core)* detail controller method contracts
+- define trusted deployment boundary
+- *(core)* complete public API rustdoc
+- *(core)* cover controller lifecycle edges
+- *(fairness)* model heterogeneous network RTT
+- *(core)* remove unreachable scheduling error
+- *(controller)* remove redundant request tracking
+- *(controller)* own load refresh sequencing
+- *(controller)* own dispatch transition timing
+- *(adapters)* hide probe controls
+- *(core)* document probe validation panics
+- *(core)* remove avoidable panic paths
+
 ### Changed
 
 - Make `dispatch_state` own time-driven controller refreshes and return probe
