@@ -350,6 +350,7 @@ async fn automatic_positive_probe_wakes_a_queued_dispatch() {
     endpoint_config.probe_schedule = ProbeSchedule {
         positive_probability: 1.0,
         negative_probability: 0.0,
+        positive_rate_delta: 1.0,
         min_interval: Duration::from_secs(1),
         max_interval: Duration::from_secs(1),
         duration: Duration::from_secs(1),
