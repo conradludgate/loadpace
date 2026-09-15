@@ -55,7 +55,10 @@ files, command output, or commit messages.
 
 ## Release workflow
 
-The workspace uses release-plz. Keep package versions and inter-package
-dependency requirements consistent, and verify release-plz configuration
-changes separately from implementation changes. Crates must exist on crates.io
-before trusted publishing can be configured for them.
+The workspace uses release-plz to generate changelog entries from conventional
+commits. Do not edit crate changelogs manually as part of implementation work;
+write accurate conventional commit messages and leave changelog updates to the
+release-plz release PR. Keep package versions and inter-package dependency
+requirements consistent, and verify release-plz configuration changes
+separately from implementation changes. Crates must exist on crates.io before
+trusted publishing can be configured for them.
