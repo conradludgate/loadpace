@@ -40,11 +40,19 @@ impl Default for EndpointConfig {
 }
 
 impl EndpointConfig {
+    /// Sets the maximum number of accepted but not-yet-dispatched requests.
+    ///
+    /// This is a bounded scheduling horizon rather than an overload buffer.
+    /// A controller rejects further reservations once the capacity is used.
     pub fn queue_capacity(mut self, capacity: usize) -> Self {
         self.queue_capacity = capacity;
         self
     }
 
+    /// Sets the emergency cap on requests that have actually dispatched.
+    ///
+    /// Normal traffic should be controlled by pacing before this limit is
+    /// reached. The cap protects against pathological latency and stuck work.
     pub fn max_inflight(mut self, max_inflight: usize) -> Self {
         self.max_inflight = max_inflight;
         self
@@ -91,14 +99,18 @@ impl InFlightRequest {
 /// The result of asking whether a virtual queue reservation may dispatch.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DispatchState {
+    /// The reservation is at the queue head and may dispatch immediately.
     Ready,
     /// The controller should be checked again at this instant.
     ///
     /// This may be the reservation's pacing deadline or an earlier internal
     /// controller transition, such as a probe starting or ending.
     WaitUntil(Instant),
+    /// An earlier reservation must dispatch or be cancelled first.
     WaitForPrevious,
+    /// The endpoint's emergency inflight cap is currently full.
     InflightLimit,
+    /// The reservation is foreign, was cancelled, or no longer exists.
     Cancelled,
 }
 
@@ -112,23 +124,43 @@ struct PendingReservation {
 /// A point-in-time view useful for metrics, tests, and P2C load prediction.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ControllerSnapshot {
+    /// Long-term RTT used to convert the concurrency target into a base rate.
     pub expected_rtt: Duration,
+    /// Minimum RTT observed within the rolling baseline window.
     pub baseline_rtt: Duration,
+    /// Short-term exponentially weighted RTT estimate.
     pub short_rtt: Duration,
+    /// Long-term exponentially weighted RTT estimate.
     pub long_rtt: Duration,
+    /// Fractional concurrency selected by the Gradient2 controller.
     pub target_concurrency: f64,
+    /// Concurrency implied by the current rate, including any active probe.
     pub effective_concurrency: f64,
+    /// Requests per second derived from target concurrency and expected RTT.
     pub base_rate: f64,
+    /// Current requests per second after applying an active probe, if any.
     pub effective_rate: f64,
+    /// The GCRA theoretical arrival time committed by actual dispatches.
     pub committed_tat: Instant,
+    /// Predicted TAT after all current virtual queue reservations.
+    ///
+    /// This is [`None`] when the virtual queue is empty.
     pub virtual_tail_tat: Option<Instant>,
+    /// Number of accepted but not-yet-dispatched reservations.
     pub queued: usize,
+    /// Number of dispatched requests awaiting completion.
     pub inflight: usize,
+    /// Configured maximum number of queued reservations.
     pub queue_capacity: usize,
+    /// Configured emergency cap on dispatched requests.
     pub max_inflight: usize,
+    /// Number of dispatched requests reported as completed.
     pub completed: u64,
+    /// Number of unhealthy completions and transport admission failures.
     pub failures: u64,
+    /// Number of successful RTT samples observed by the latency estimator.
     pub latency_samples: u64,
+    /// Temporary probe active at the time of the snapshot, if any.
     pub active_probe: Option<Probe>,
 }
 
@@ -201,30 +233,40 @@ impl EndpointController {
         }
     }
 
+    /// Returns the configuration owned by this controller.
     pub fn config(&self) -> &EndpointConfig {
         &self.config
     }
 
+    /// Returns the controller's GCRA pacer for diagnostics.
     pub fn pacer(&self) -> &Gcra {
         &self.pacer
     }
 
+    /// Returns the controller's Gradient2 state for diagnostics.
     pub fn gradient(&self) -> &Gradient2 {
         &self.gradient
     }
 
+    /// Returns the controller's latency estimator for diagnostics.
     pub fn latency(&self) -> &LatencyEstimator {
         &self.latency
     }
 
+    /// Returns the number of accepted but not-yet-dispatched reservations.
     pub fn queued(&self) -> usize {
         self.pending.len()
     }
 
+    /// Returns the number of dispatched requests awaiting completion.
     pub fn inflight(&self) -> usize {
         self.inflight
     }
 
+    /// Returns whether the bounded virtual queue can accept a reservation.
+    ///
+    /// This does not guarantee immediate dispatch: the request may still wait
+    /// for its pacing deadline, earlier reservations, or inflight capacity.
     pub fn may_schedule(&self) -> bool {
         self.pending.len() < self.config.queue_capacity
     }
@@ -279,6 +321,12 @@ impl EndpointController {
         true
     }
 
+    /// Refreshes controller policy and reports a reservation's current state.
+    ///
+    /// Callers should wait until the instant from [`DispatchState::WaitUntil`]
+    /// before polling again. [`DispatchState::WaitForPrevious`] is woken by an
+    /// earlier dispatch or cancellation, while [`DispatchState::InflightLimit`]
+    /// is woken by a completion.
     pub fn dispatch_state(
         &mut self,
         reservation: DispatchReservation,
@@ -438,6 +486,10 @@ impl EndpointController {
             .as_secs_f64()
     }
 
+    /// Refreshes time-driven state and returns a point-in-time metrics view.
+    ///
+    /// Calling this method may expire or start a probe, and can therefore
+    /// update the effective pacing rate even though it does not reserve work.
     pub fn snapshot(&mut self, now: Instant) -> ControllerSnapshot {
         self.refresh(now);
         let target = self.gradient.concurrency();

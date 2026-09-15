@@ -6,15 +6,23 @@ use std::time::{Duration, Instant};
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ProbeKind {
     /// Temporarily add a fixed number of requests per second.
-    Positive { delta_rate: f64 },
+    Positive {
+        /// Requests per second temporarily added to the base rate.
+        delta_rate: f64,
+    },
     /// Temporarily multiply the base request rate.
-    Negative { factor: f64 },
+    Negative {
+        /// Multiplier temporarily applied to the base rate.
+        factor: f64,
+    },
 }
 
 /// An active temporary probe.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Probe {
+    /// Perturbation applied while the probe remains active.
     pub kind: ProbeKind,
+    /// Instant at which the probe expires.
     pub until: Instant,
 }
 
@@ -152,12 +160,19 @@ impl ProbeState {
 /// the controller's defaults.
 #[derive(Clone, Debug)]
 pub struct ProbeSchedule {
+    /// Probability that a scheduled decision starts a positive probe.
     pub positive_probability: f64,
+    /// Probability that a scheduled decision starts a negative probe.
     pub negative_probability: f64,
+    /// Requests per second added during a positive probe.
     pub positive_rate_delta: f64,
+    /// Base-rate multiplier used during a negative probe.
     pub negative_factor: f64,
+    /// Length of time for which a started probe remains active.
     pub duration: Duration,
+    /// Minimum delay between randomized probe decisions.
     pub min_interval: Duration,
+    /// Maximum delay between randomized probe decisions.
     pub max_interval: Duration,
 }
 

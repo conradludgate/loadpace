@@ -85,10 +85,17 @@ impl LatencyEstimator {
         }
     }
 
+    /// Observes a dispatch-to-completion RTT using the current clock time.
+    ///
+    /// Use [`Self::observe_at`] when deterministic timing is required.
     pub fn observe(&mut self, sample: Duration) {
         self.observe_at(sample, Instant::now());
     }
 
+    /// Observes a dispatch-to-completion RTT at an explicit time.
+    ///
+    /// Samples below [`LatencyEstimatorConfig::min_rtt`] are clamped. The
+    /// explicit time controls rotation of the rolling minimum-RTT window.
     pub fn observe_at(&mut self, sample: Duration, now: Instant) {
         let value = sample.max(self.config.min_rtt).as_secs_f64();
         self.short = ewma(self.short, value, self.config.short_alpha);
@@ -107,14 +114,17 @@ impl LatencyEstimator {
         self.samples += 1;
     }
 
+    /// Returns the long-term RTT used for Little's Law rate derivation.
     pub fn expected_rtt(&self) -> Duration {
         Duration::from_secs_f64(self.long.max(self.config.min_rtt.as_secs_f64()))
     }
 
+    /// Returns the short-term exponentially weighted RTT estimate.
     pub fn short(&self) -> Duration {
         Duration::from_secs_f64(self.short)
     }
 
+    /// Returns the long-term exponentially weighted RTT estimate.
     pub fn long(&self) -> Duration {
         Duration::from_secs_f64(self.long)
     }
@@ -129,6 +139,7 @@ impl LatencyEstimator {
         )
     }
 
+    /// Returns the number of RTT samples observed.
     pub fn samples(&self) -> u64 {
         self.samples
     }

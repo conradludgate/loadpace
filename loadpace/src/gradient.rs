@@ -237,14 +237,20 @@ impl Gradient2 {
         self.next_update_at = Some(saturating_add(now, self.config.update_interval));
     }
 
+    /// Returns the current fractional concurrency target.
     pub fn concurrency(&self) -> f64 {
         self.concurrency
     }
 
+    /// Returns the bounded RTT gradient used by the latest feedback update.
+    ///
+    /// The value is `0.0` after a failure, and initially `1.0` before any
+    /// feedback has been processed.
     pub fn last_gradient(&self) -> f64 {
         self.last_gradient
     }
 
+    /// Returns the number of operating-point updates that were applied.
     pub fn updates(&self) -> u64 {
         self.updates
     }
