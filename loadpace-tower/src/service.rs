@@ -21,6 +21,7 @@ use tower::{Layer, Service};
 pub struct LoadMetric(pub f64);
 
 impl LoadMetric {
+    /// Returns the predicted completion cost in seconds.
     pub fn as_secs(self) -> f64 {
         self.0
     }
@@ -89,10 +90,26 @@ pub struct AdaptiveEndpoint<S> {
 }
 
 impl<S> AdaptiveEndpoint<S> {
+    /// Wraps a Tower endpoint using the current Tokio runtime time.
+    ///
+    /// The returned service starts with an immediately available pacing slot.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `config` contains invalid controller settings.
     pub fn new(inner: S, config: EndpointConfig) -> Self {
         Self::new_at(inner, config, now())
     }
 
+    /// Wraps a Tower endpoint using an explicit controller start time.
+    ///
+    /// This constructor is useful in deterministic tests. Production code
+    /// should normally use [`Self::new`] so Tokio and controller deadlines
+    /// share the runtime's clock domain.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `config` contains invalid controller settings.
     pub fn new_at(inner: S, config: EndpointConfig, now: Instant) -> Self {
         Self {
             shared: Arc::new(Shared {
@@ -119,10 +136,18 @@ impl<S> AdaptiveEndpoint<S> {
         result
     }
 
+    /// Returns a current snapshot of this endpoint's controller.
+    ///
+    /// Reading a snapshot refreshes time-driven probe state and may update the
+    /// effective pacing rate.
     pub fn snapshot(&self) -> loadpace::ControllerSnapshot {
         self.with_controller(|controller| controller.snapshot(now()))
     }
 
+    /// Returns the endpoint's predicted completion cost for load balancing.
+    ///
+    /// Lower values are preferred. Reading the metric refreshes time-driven
+    /// controller state, including probes.
     pub fn load_metric(&self) -> LoadMetric {
         self.with_controller(|controller| {
             let current = now();
@@ -178,10 +203,12 @@ pin_project! {
 }
 
 impl<D> AdaptiveDiscovery<D> {
+    /// Wraps a discovery stream and clones `config` into every inserted service.
     pub fn new(inner: D, config: EndpointConfig) -> Self {
         Self { inner, config }
     }
 
+    /// Consumes the wrapper and returns the original discovery stream.
     pub fn into_inner(self) -> D {
         self.inner
     }

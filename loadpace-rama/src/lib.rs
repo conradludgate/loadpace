@@ -13,8 +13,31 @@
 //! If the bounded scheduling horizon is full, the returned future resolves to
 //! [`ServiceError::Rejected`]. Accepted requests retain their reservation
 //! until they are dispatched or the returned future is dropped.
+//!
+//! # Deployment scope
+//!
+//! This crate is intended for trusted microservice clients sharing private
+//! service endpoints. Its congestion-control and fairness behavior assumes
+//! that the other clients are cooperative and run compatible control logic.
+//! An unpaced or malicious peer can consume capacity without participating in
+//! the feedback loop.
+//!
+//! Do not use Loadpace as the primary rate limit, quota, abuse-prevention
+//! mechanism, or DDoS defense for a general-purpose public API. Those controls
+//! must be enforced by the server or another trusted ingress boundary.
+//!
+//! # Where to start
+//!
+//! - Wrap one service with [`AdaptiveEndpoint`] or [`AdaptiveLayer`].
+//! - Enable the `dns` feature and use `dns::AdaptiveDnsLayer` when connector
+//!   targets should be resolved and balanced automatically.
+//! - See the repository's
+//!   [Rama how-to guide](https://github.com/conradludgate/loadpace/blob/main/docs/how-to/integrate-with-rama.md)
+//!   and [adapter reference](https://github.com/conradludgate/loadpace/blob/main/docs/reference/rama.md)
+//!   for complete integration details.
 
 #![forbid(unsafe_code)]
+#![warn(missing_docs)]
 
 #[cfg(feature = "dns")]
 pub mod dns;

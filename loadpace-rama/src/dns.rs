@@ -3,6 +3,10 @@
 //! Unlike Rama's DNS IP pickers, this service reserves Loadpace admission as
 //! part of endpoint selection and carries that reservation through the inner
 //! service future.
+//!
+//! This module has the same trusted-deployment scope as the crate. DNS answers
+//! identify cooperating private service endpoints; discovery and P2C selection
+//! are not security boundaries for routing hostile public traffic.
 
 use super::{EndpointOwner, EndpointState, RequestGuard, begin_dispatch, lock, now};
 use arc_swap::ArcSwap;
