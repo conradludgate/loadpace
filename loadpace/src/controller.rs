@@ -250,7 +250,10 @@ impl EndpointController {
         self.pending.push_back(PendingReservation {
             id,
             scheduled_at,
-            was_paced: scheduled_at > now,
+            // A future prediction is not evidence that the request actually
+            // waited. An earlier reservation may still be cancelled before
+            // this one reaches the head of the queue.
+            was_paced: false,
         });
         self.queued += 1;
 
@@ -312,12 +315,15 @@ impl EndpointController {
         if self.inflight >= self.config.max_inflight {
             return DispatchState::InflightLimit;
         }
-        if front.scheduled_at > now {
+        let scheduled_at = front.scheduled_at;
+        if scheduled_at > now {
+            self.pending
+                .front_mut()
+                .expect("validated reservation must remain in the queue")
+                .was_paced = true;
             let wake_at = self
                 .next_dispatch_refresh_at()
-                .map_or(front.scheduled_at, |refresh_at| {
-                    front.scheduled_at.min(refresh_at)
-                });
+                .map_or(scheduled_at, |refresh_at| scheduled_at.min(refresh_at));
             return DispatchState::WaitUntil(wake_at);
         }
         DispatchState::Ready

@@ -245,10 +245,29 @@ fn controller_marks_future_slots_as_paced() {
 
     let reservation = controller.reserve(now + Duration::from_millis(1)).unwrap();
     let dispatch_at = now + Duration::from_millis(50);
+    assert_eq!(
+        controller.dispatch_state(reservation, now + Duration::from_millis(1)),
+        DispatchState::WaitUntil(dispatch_at),
+    );
     let second = controller
         .on_dispatched(reservation, dispatch_at)
         .expect("the future slot should become dispatchable");
     assert!(second.was_paced());
+}
+
+#[test]
+fn controller_does_not_mark_a_collapsed_virtual_slot_as_paced() {
+    let now = at_zero();
+    let mut controller = EndpointController::new(EndpointConfig::default(), now);
+
+    let first = controller.reserve(now).unwrap();
+    let second = controller.reserve(now).unwrap();
+    assert!(controller.cancel(first, now));
+
+    let second = controller
+        .on_dispatched(second, now)
+        .expect("cancelling the head should make the next reservation ready");
+    assert!(!second.was_paced());
 }
 
 #[test]
