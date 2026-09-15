@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0-rc.5](https://github.com/conradludgate/loadpace/compare/loadpace-tower-v0.1.0-rc.4...loadpace-tower-v0.1.0-rc.5) - 2026-09-15
+
+### Added
+
+- *(core)* simplify endpoint configuration
+
+### Fixed
+
+- *(adapters)* preserve feedback silence on cancellation
+
 ## [0.1.0-rc.4](https://github.com/conradludgate/loadpace/compare/loadpace-tower-v0.1.0-rc.3...loadpace-tower-v0.1.0-rc.4) - 2026-09-15
 
 ### Added

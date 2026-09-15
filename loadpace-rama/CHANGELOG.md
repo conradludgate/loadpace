@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0-rc.4](https://github.com/conradludgate/loadpace/compare/loadpace-rama-v0.1.0-rc.3...loadpace-rama-v0.1.0-rc.4) - 2026-09-15
+
+### Added
+
+- *(core)* simplify endpoint configuration
+
+### Fixed
+
+- *(adapters)* preserve feedback silence on cancellation
+
+### Other
+
+- *(rama)* align DNS scenarios with endpoint assumptions
+
 ## [0.1.0-rc.3](https://github.com/conradludgate/loadpace/compare/loadpace-rama-v0.1.0-rc.2...loadpace-rama-v0.1.0-rc.3) - 2026-09-15
 
 ### Added
