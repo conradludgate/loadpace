@@ -76,3 +76,16 @@ fn simulator_models_worker_capacity_and_queueing_latency() {
     assert!(report.endpoints[0].snapshot.expected_rtt > Duration::from_millis(10));
     assert!(report.max_queued <= 4);
 }
+
+#[test]
+fn simulator_makes_progress_above_timer_precision() {
+    let report = simulate(SimulationConfig {
+        duration: Duration::ZERO,
+        offered_rate: 1e20,
+        endpoints: vec![endpoint(1, Duration::from_millis(1))],
+        seed: 13,
+    });
+
+    assert_eq!(report.offered, 1);
+    assert_eq!(report.accepted, 1);
+}

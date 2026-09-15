@@ -103,6 +103,9 @@ pub fn simulate(config: SimulationConfig) -> SimulationReport {
     let Ok(arrival_interval) = Duration::try_from_secs_f64(1.0 / config.offered_rate) else {
         panic!("offered rate is too low to represent an arrival interval");
     };
+    // Rates above the clock's nanosecond precision would otherwise round to
+    // zero and leave `next_arrival` unchanged forever.
+    let arrival_interval = arrival_interval.max(Duration::from_nanos(1));
     let mut next_arrival = start;
     let mut offered = 0;
     let mut accepted = 0;
