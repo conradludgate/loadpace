@@ -86,7 +86,7 @@ impl DnsAddressResolver for AlternatingResolver {
         _: Domain,
     ) -> impl Stream<Item = Result<Ipv4Addr, Self::Error>> + Send + '_ {
         let call = self.calls.fetch_add(1, Ordering::SeqCst);
-        let ips = if call % 2 == 0 {
+        let ips = if call.is_multiple_of(2) {
             [self.first, self.second]
         } else {
             [self.second, self.first]
