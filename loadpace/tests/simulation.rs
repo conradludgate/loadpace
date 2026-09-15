@@ -89,3 +89,23 @@ fn simulator_makes_progress_above_timer_precision() {
     assert_eq!(report.offered, 1);
     assert_eq!(report.accepted, 1);
 }
+
+#[test]
+fn simulation_defaults_are_a_runnable_baseline() {
+    let config = SimulationConfig::default();
+
+    assert_eq!(config.duration, Duration::from_secs(10));
+    assert_eq!(config.offered_rate, 1.0);
+    assert_eq!(config.endpoints.len(), 1);
+    assert_eq!(config.endpoints[0].workers, 1);
+    assert_eq!(config.endpoints[0].service_time, Duration::from_millis(50));
+}
+
+#[test]
+#[should_panic(expected = "offered rate is too low")]
+fn simulator_rejects_an_unrepresentably_low_offered_rate() {
+    simulate(SimulationConfig {
+        offered_rate: 1e-30,
+        ..SimulationConfig::default()
+    });
+}

@@ -555,3 +555,127 @@ fn controller_rejects_a_completion_from_another_controller() {
     assert_eq!(second.inflight(), 0);
     assert_eq!(second.snapshot(now).completed, 1);
 }
+
+#[test]
+fn controller_rejects_foreign_and_cancelled_reservations() {
+    let now = at_zero();
+    let mut first = EndpointController::new(EndpointConfig::default(), now);
+    let mut second = EndpointController::new(EndpointConfig::default(), now);
+
+    let foreign = first.reserve(now).unwrap();
+    assert!(!second.cancel(foreign, now));
+    assert_eq!(
+        second.dispatch_state(foreign, now),
+        DispatchState::Cancelled
+    );
+
+    assert!(first.cancel(foreign, now));
+    assert!(!first.cancel(foreign, now));
+    assert_eq!(first.dispatch_state(foreign, now), DispatchState::Cancelled);
+    assert_eq!(
+        first.on_dispatched(foreign, now),
+        Err(DispatchState::Cancelled)
+    );
+}
+
+#[test]
+fn controller_requires_fifo_dispatch_and_enforces_the_inflight_cap() {
+    let now = at_zero();
+    let config = EndpointConfig {
+        max_inflight: 1,
+        probe_schedule: ProbeSchedule {
+            positive_probability: 0.0,
+            negative_probability: 0.0,
+            ..ProbeSchedule::default()
+        },
+        ..EndpointConfig::default()
+    };
+    let mut controller = EndpointController::new(config, now);
+
+    let first = controller.reserve(now).unwrap();
+    let second = controller.reserve(now).unwrap();
+    assert_eq!(
+        controller.on_dispatched(second, now),
+        Err(DispatchState::WaitForPrevious)
+    );
+
+    let active = controller.on_dispatched(first, now).unwrap();
+    let second_ready_at = now + controller.pacer().interval();
+    assert_eq!(
+        controller.dispatch_state(second, second_ready_at),
+        DispatchState::InflightLimit
+    );
+
+    assert!(controller.on_complete(
+        active,
+        Outcome::Success,
+        Duration::from_millis(50),
+        second_ready_at,
+    ));
+    assert_eq!(
+        controller.dispatch_state(second, second_ready_at),
+        DispatchState::Ready
+    );
+}
+
+#[test]
+fn controller_records_admission_failures_without_inflight_work() {
+    let now = at_zero();
+    let mut controller = EndpointController::new(EndpointConfig::default(), now);
+    let initial_target = controller.gradient().concurrency();
+
+    controller.on_admission_failure(now);
+
+    let snapshot = controller.snapshot(now);
+    assert_eq!(snapshot.failures, 1);
+    assert_eq!(snapshot.completed, 0);
+    assert_eq!(snapshot.queued, 0);
+    assert_eq!(snapshot.inflight, 0);
+    assert!(snapshot.target_concurrency < initial_target);
+}
+
+#[test]
+fn controller_exposes_its_configured_components() {
+    let now = at_zero();
+    let config = EndpointConfig {
+        queue_capacity: 7,
+        max_inflight: 11,
+        latency: LatencyEstimatorConfig {
+            initial_rtt: Duration::from_millis(80),
+            ..LatencyEstimatorConfig::default()
+        },
+        gradient: Gradient2Config {
+            initial_concurrency: 2.0,
+            ..Gradient2Config::default()
+        },
+        ..EndpointConfig::default()
+    };
+    let controller = EndpointController::new(config, now);
+
+    assert_eq!(controller.config().queue_capacity, 7);
+    assert_eq!(controller.config().max_inflight, 11);
+    assert_eq!(controller.pacer().rate(), 25.0);
+    assert_eq!(controller.gradient().concurrency(), 2.0);
+    assert_eq!(
+        controller.latency().expected_rtt(),
+        Duration::from_millis(80)
+    );
+}
+
+#[test]
+fn gradient2_convenience_methods_match_the_timed_api() {
+    let sample = Duration::from_millis(50);
+
+    let mut gradient = Gradient2::new(Gradient2Config::default());
+    assert!(gradient.on_rtt(sample, sample, 1));
+
+    let mut gradient = Gradient2::new(Gradient2Config::default());
+    assert!(!gradient.on_rtt_with_pacing(sample, sample, 1, false));
+
+    let mut gradient = Gradient2::new(Gradient2Config::default());
+    assert!(gradient.on_rtt_with_baseline(sample, sample, 1, true));
+
+    gradient.on_failure();
+    assert_eq!(gradient.last_gradient(), 0.0);
+    assert_eq!(gradient.updates(), 2);
+}
