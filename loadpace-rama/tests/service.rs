@@ -3,11 +3,20 @@ use loadpace_rama::{AdaptiveEndpoint, AdaptiveLayer, ServiceError};
 use rama::{Layer, Service};
 use std::future::Future;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::task::{Context, Wake};
 use std::time::{Duration, Instant};
 use tokio::sync::Notify;
 
 fn assert_send_sync<T: Send + Sync>() {}
+
+struct WakeFlag(AtomicBool);
+
+impl Wake for WakeFlag {
+    fn wake(self: Arc<Self>) {
+        self.0.store(true, Ordering::Release);
+    }
+}
 
 #[derive(Clone, Default)]
 struct Echo;
@@ -80,6 +89,40 @@ async fn endpoint_dispatches_and_records_a_success() {
     assert_eq!(snapshot.latency_samples, 1);
 }
 
+#[tokio::test(start_paused = true)]
+async fn metric_reads_wake_dispatch_waiters_when_feedback_decays() {
+    for read_snapshot in [false, true] {
+        let endpoint = AdaptiveEndpoint::new(
+            Held {
+                started: Arc::new(Notify::new()),
+                release: Arc::new(Notify::new()),
+                starts: Arc::new(AtomicUsize::new(0)),
+            },
+            config(2, Duration::from_millis(20)),
+        );
+        let wake_flag = Arc::new(WakeFlag(AtomicBool::new(false)));
+        let waker = Arc::clone(&wake_flag).into();
+        let mut context = Context::from_waker(&waker);
+        let mut first = Box::pin(endpoint.serve(1));
+        assert!(first.as_mut().poll(&mut context).is_pending());
+        let mut waiting = Box::pin(endpoint.serve(2));
+        assert!(waiting.as_mut().poll(&mut context).is_pending());
+        let probe = endpoint.snapshot().active_probe;
+
+        tokio::time::advance(Duration::from_millis(40)).await;
+        wake_flag.0.store(false, Ordering::Release);
+        if read_snapshot {
+            endpoint.snapshot();
+        } else {
+            endpoint.load_metric();
+        }
+        assert!(wake_flag.0.load(Ordering::Acquire));
+        assert_eq!(endpoint.snapshot().active_probe, probe);
+        drop(waiting);
+        drop(first);
+    }
+}
+
 #[test]
 fn endpoint_remains_send_and_sync() {
     assert_send_sync::<AdaptiveEndpoint<Echo>>();
@@ -150,9 +193,12 @@ async fn endpoint_paces_the_next_request() {
     assert_eq!(starts.load(Ordering::Relaxed), 1);
 
     tokio::time::advance(Duration::from_millis(1)).await;
-    while starts.load(Ordering::Relaxed) < 2 {
-        tokio::task::yield_now().await;
-    }
+    // A probe can move the deadline slightly beyond one second. Await its
+    // notification so paused time can advance instead of spinning at that boundary.
+    tokio::time::timeout(Duration::from_secs(1), started.notified())
+        .await
+        .unwrap();
+    assert_eq!(starts.load(Ordering::Relaxed), 2);
 
     release.notify_waiters();
     assert_eq!(first.await.unwrap().unwrap(), 1);

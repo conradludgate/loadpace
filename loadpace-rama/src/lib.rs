@@ -43,8 +43,8 @@
 pub mod dns;
 
 use loadpace::{
-    ControllerSnapshot, DispatchReservation, DispatchState, EndpointConfig, EndpointController,
-    InFlightRequest, Outcome, ScheduleError,
+    Completion, ControllerChanges, ControllerSnapshot, DispatchReservation, DispatchState,
+    EndpointConfig, EndpointController, InFlightRequest, ScheduleError,
 };
 use rama::{Layer, Service};
 use std::error::Error;
@@ -136,6 +136,22 @@ impl EndpointState {
             dispatch: Notify::new(),
         }
     }
+
+    fn with_controller<T>(&self, operation: impl FnOnce(&mut EndpointController) -> T) -> T {
+        let (result, changes) = {
+            let mut controller = lock(&self.controller);
+            let result = operation(&mut controller);
+            (result, controller.take_changes())
+        };
+        self.notify_changes(changes);
+        result
+    }
+
+    fn notify_changes(&self, changes: ControllerChanges) {
+        if changes.dispatch {
+            self.dispatch.notify_waiters();
+        }
+    }
 }
 
 pub(crate) trait EndpointOwner: Send + Sync + 'static {
@@ -198,25 +214,14 @@ impl<S> AdaptiveEndpoint<S> {
         }
     }
 
-    fn with_controller<T>(&self, operation: impl FnOnce(&mut EndpointController) -> T) -> T {
-        let (result, changed) = {
-            let mut controller = lock(&self.shared.endpoint.controller);
-            let before = controller.active_probe();
-            let result = operation(&mut controller);
-            (result, before != controller.active_probe())
-        };
-        if changed {
-            self.shared.endpoint.dispatch.notify_waiters();
-        }
-        result
-    }
-
     /// Returns a current snapshot of this endpoint's controller.
     ///
     /// Reading a snapshot refreshes time-driven probe state and may update the
     /// effective pacing rate shared by all endpoint clones.
     pub fn snapshot(&self) -> ControllerSnapshot {
-        self.with_controller(|controller| controller.snapshot(now()))
+        self.shared
+            .endpoint
+            .with_controller(|controller| controller.snapshot(now()))
     }
 
     /// Returns the endpoint's predicted completion cost for load balancing.
@@ -224,7 +229,7 @@ impl<S> AdaptiveEndpoint<S> {
     /// Lower values are preferred. Reading the metric refreshes time-driven
     /// controller state, including probes.
     pub fn load_metric(&self) -> LoadMetric {
-        self.with_controller(|controller| {
+        self.shared.endpoint.with_controller(|controller| {
             let current = now();
             LoadMetric(controller.load(current))
         })
@@ -321,39 +326,23 @@ impl<O: EndpointOwner> RequestGuard<O> {
         self.state = RequestState::Dispatched(active);
     }
 
-    pub(crate) fn finish(&mut self, outcome: Outcome, now: Instant) {
+    pub(crate) fn finish(&mut self, completion: Completion, now: Instant) {
         let endpoint = self.owner.endpoint_state();
         match std::mem::replace(&mut self.state, RequestState::Finished) {
             RequestState::Dispatched(active) => {
-                let latency = now.saturating_duration_since(active.dispatched_at());
-                lock(&endpoint.controller).on_complete(active, outcome, latency, now);
+                endpoint.with_controller(|controller| controller.finish(active, completion, now));
             }
             RequestState::Reserved(reservation) => {
-                lock(&endpoint.controller).cancel(reservation, now);
+                endpoint.with_controller(|controller| controller.cancel(reservation, now));
             }
-            RequestState::Finished => return,
+            RequestState::Finished => {}
         }
-        endpoint.dispatch.notify_waiters();
-    }
-
-    fn abandon(&mut self, now: Instant) {
-        let endpoint = self.owner.endpoint_state();
-        match std::mem::replace(&mut self.state, RequestState::Finished) {
-            RequestState::Dispatched(active) => {
-                lock(&endpoint.controller).on_abandoned(active, now);
-            }
-            RequestState::Reserved(reservation) => {
-                lock(&endpoint.controller).cancel(reservation, now);
-            }
-            RequestState::Finished => return,
-        }
-        endpoint.dispatch.notify_waiters();
     }
 }
 
 impl<O: EndpointOwner> Drop for RequestGuard<O> {
     fn drop(&mut self) {
-        self.abandon(now());
+        self.finish(Completion::Abandoned, now());
     }
 }
 
@@ -362,18 +351,11 @@ fn dispatch_state(
     reservation: DispatchReservation,
     current: Instant,
 ) -> DispatchState {
-    let (state, probe_changed) = {
-        let mut controller = lock(&endpoint.controller);
-        let previous_probe = controller.active_probe();
-        let state = controller.dispatch_state(reservation, current);
-        (state, previous_probe != controller.active_probe())
-    };
-
-    // Wake waiters after releasing the controller lock so they observe the
-    // complete state transition when they re-check their reservations.
-    if probe_changed {
-        endpoint.dispatch.notify_waiters();
-    }
+    let mut controller = lock(&endpoint.controller);
+    let state = controller.dispatch_state(reservation, current);
+    // The FIFO head already observes its refreshed deadline; later requests
+    // still wait for it. Do not wake this task on every feedback-decay update.
+    let _ = controller.take_changes();
     state
 }
 
@@ -408,10 +390,9 @@ pub(crate) async fn begin_dispatch(
 ) -> InFlightRequest {
     loop {
         wait_for_dispatch(endpoint, reservation).await;
-        let dispatch = lock(&endpoint.controller).on_dispatched(reservation, now());
+        let dispatch =
+            endpoint.with_controller(|controller| controller.on_dispatched(reservation, now()));
         if let Ok(active) = dispatch {
-            // Removing the FIFO head can make the next reservation eligible.
-            endpoint.dispatch.notify_waiters();
             return active;
         }
     }
@@ -438,9 +419,9 @@ where
         .await
         .map_err(ServiceError::Inner);
     let outcome = if result.is_ok() {
-        Outcome::Success
+        Completion::Success
     } else {
-        Outcome::Failure
+        Completion::Failure
     };
     guard.finish(outcome, now());
     result

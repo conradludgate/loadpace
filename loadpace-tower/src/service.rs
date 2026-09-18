@@ -1,8 +1,8 @@
 use crate::ServiceError;
 use futures_core::stream::{Stream, TryStream};
 use loadpace::{
-    DispatchReservation, DispatchState, EndpointConfig, EndpointController, InFlightRequest,
-    Outcome,
+    Completion, DispatchReservation, DispatchState, EndpointConfig, EndpointController,
+    InFlightRequest,
 };
 use pin_project_lite::pin_project;
 use std::future::Future;
@@ -32,6 +32,29 @@ struct Shared<S> {
     service: tokio::sync::Mutex<S>,
     controller: Mutex<ControllerState>,
     dispatch: tokio::sync::Notify,
+}
+
+impl<S> Shared<S> {
+    fn with_controller<T>(&self, operation: impl FnOnce(&mut EndpointController) -> T) -> T {
+        let (result, changes, admission_waker) = {
+            let mut state = lock(&self.controller);
+            let result = operation(&mut state.controller);
+            let changes = state.controller.take_changes();
+            let admission_waker = if changes.admission {
+                state.take_admission_waker()
+            } else {
+                None
+            };
+            (result, changes, admission_waker)
+        };
+        if let Some(waker) = admission_waker {
+            waker.wake();
+        }
+        if changes.dispatch {
+            self.dispatch.notify_waiters();
+        }
+        result
+    }
 }
 
 struct ControllerState {
@@ -131,25 +154,13 @@ impl<S> AdaptiveEndpoint<S> {
         }
     }
 
-    fn with_controller<T>(&self, operation: impl FnOnce(&mut EndpointController) -> T) -> T {
-        let (result, changed) = {
-            let mut state = lock(&self.shared.controller);
-            let before = state.controller.active_probe();
-            let result = operation(&mut state.controller);
-            (result, before != state.controller.active_probe())
-        };
-        if changed {
-            self.shared.dispatch.notify_waiters();
-        }
-        result
-    }
-
     /// Returns a current snapshot of this endpoint's controller.
     ///
     /// Reading a snapshot refreshes time-driven probe state and may update the
     /// effective pacing rate.
     pub fn snapshot(&self) -> loadpace::ControllerSnapshot {
-        self.with_controller(|controller| controller.snapshot(now()))
+        self.shared
+            .with_controller(|controller| controller.snapshot(now()))
     }
 
     /// Returns the endpoint's predicted completion cost for load balancing.
@@ -157,7 +168,7 @@ impl<S> AdaptiveEndpoint<S> {
     /// Lower values are preferred. Reading the metric refreshes time-driven
     /// controller state, including probes.
     pub fn load_metric(&self) -> LoadMetric {
-        self.with_controller(|controller| {
+        self.shared.with_controller(|controller| {
             let current = now();
             LoadMetric(controller.load(current))
         })
@@ -339,49 +350,18 @@ impl<S> PendingRequest<S> {
         self.state = RequestState::InFlight(active);
     }
 
-    fn finish(&mut self, outcome: Outcome, now: Instant) {
+    fn finish(&mut self, completion: Completion, now: Instant) {
         match std::mem::replace(&mut self.state, RequestState::Finished) {
             RequestState::InFlight(active) => {
-                let latency = now.saturating_duration_since(active.dispatched_at());
-                lock(&self.shared.controller)
-                    .controller
-                    .on_complete(active, outcome, latency, now);
+                self.shared
+                    .with_controller(|controller| controller.finish(active, completion, now));
             }
             RequestState::Queued(reservation) => {
-                let admission_waker = {
-                    let mut state = lock(&self.shared.controller);
-                    state.controller.cancel(reservation, now);
-                    state.take_admission_waker()
-                };
-                if let Some(waker) = admission_waker {
-                    waker.wake();
-                }
+                self.shared
+                    .with_controller(|controller| controller.cancel(reservation, now));
             }
-            RequestState::Finished => return,
+            RequestState::Finished => {}
         }
-        self.shared.dispatch.notify_waiters();
-    }
-
-    fn abandon(&mut self, now: Instant) {
-        match std::mem::replace(&mut self.state, RequestState::Finished) {
-            RequestState::InFlight(active) => {
-                lock(&self.shared.controller)
-                    .controller
-                    .on_abandoned(active, now);
-            }
-            RequestState::Queued(reservation) => {
-                let admission_waker = {
-                    let mut state = lock(&self.shared.controller);
-                    state.controller.cancel(reservation, now);
-                    state.take_admission_waker()
-                };
-                if let Some(waker) = admission_waker {
-                    waker.wake();
-                }
-            }
-            RequestState::Finished => return,
-        }
-        self.shared.dispatch.notify_waiters();
     }
 
     async fn wait_until_dispatchable(&self) -> Result<(), ServiceError> {
@@ -393,21 +373,17 @@ impl<S> PendingRequest<S> {
             // between the check and the await cannot be lost.
             notified.as_mut().enable();
 
-            let (state, probe_changed) = {
+            let state = {
                 let mut shared_state = lock(&self.shared.controller);
                 if let Some(error) = &shared_state.failed {
                     return Err(error.clone());
                 }
-                let previous_probe = shared_state.controller.active_probe();
                 let state = shared_state.controller.dispatch_state(reservation, now());
-                (
-                    state,
-                    previous_probe != shared_state.controller.active_probe(),
-                )
+                // The FIFO head already observes its refreshed deadline;
+                // waking itself on each rate change would cause a busy loop.
+                let _ = shared_state.controller.take_changes();
+                state
             };
-            if probe_changed {
-                self.shared.dispatch.notify_waiters();
-            }
 
             match state {
                 DispatchState::Ready => return Ok(()),
@@ -443,6 +419,7 @@ impl<S> PendingRequest<S> {
                 let mut state = lock(&shared.controller);
                 state.failed = Some(error.clone());
                 state.controller.on_admission_failure(now());
+                let _ = state.controller.take_changes();
                 state.take_admission_waker()
             };
             if let Some(waker) = admission_waker {
@@ -456,19 +433,9 @@ impl<S> PendingRequest<S> {
         // becoming ready. Keep its readiness claim and wait for the revised
         // pacing deadline instead of assuming the earlier decision is stable.
         loop {
-            let (dispatch, admission_waker) = {
-                let mut state = lock(&self.shared.controller);
-                let dispatch = state.controller.on_dispatched(self.reservation(), now());
-                let admission_waker = if dispatch.is_ok() {
-                    state.take_admission_waker()
-                } else {
-                    None
-                };
-                (dispatch, admission_waker)
-            };
-            if let Some(waker) = admission_waker {
-                waker.wake();
-            }
+            let dispatch = self
+                .shared
+                .with_controller(|controller| controller.on_dispatched(self.reservation(), now()));
             match dispatch {
                 Ok(active) => {
                     self.mark_dispatched(active);
@@ -477,9 +444,6 @@ impl<S> PendingRequest<S> {
                 Err(_) => self.wait_until_dispatchable().await?,
             }
         }
-        // Committing the FIFO head changes the next reservation's deadline.
-        self.shared.dispatch.notify_waiters();
-
         Ok(service.call(request))
     }
 
@@ -493,15 +457,15 @@ impl<S> PendingRequest<S> {
         let response = match self.start(request).await {
             Ok(response) => response,
             Err(error) => {
-                self.finish(Outcome::Failure, now());
+                self.finish(Completion::Failure, now());
                 return Err(error);
             }
         };
         let response = response.await;
         let outcome = if response.is_ok() {
-            Outcome::Success
+            Completion::Success
         } else {
-            Outcome::Failure
+            Completion::Failure
         };
         self.finish(outcome, now());
         response.map_err(Into::into)
@@ -510,6 +474,6 @@ impl<S> PendingRequest<S> {
 
 impl<S> Drop for PendingRequest<S> {
     fn drop(&mut self) {
-        self.abandon(now());
+        self.finish(Completion::Abandoned, now());
     }
 }

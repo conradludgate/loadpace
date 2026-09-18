@@ -225,6 +225,43 @@ async fn endpoint_dispatches_and_records_a_success() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn metric_reads_wake_dispatch_waiters_when_feedback_decays() {
+    for read_snapshot in [false, true] {
+        let mut endpoint = AdaptiveEndpoint::new(
+            Held {
+                started: Arc::new(Notify::new()),
+                release: Arc::new(Notify::new()),
+                starts: Arc::new(AtomicUsize::new(0)),
+            },
+            config(2, Duration::from_millis(20)),
+        );
+        let mut first = endpoint.ready().await.unwrap().call(1);
+        assert!(futures_util::poll!(&mut first).is_pending());
+        let mut waiting = endpoint.ready().await.unwrap().call(2);
+        let wake_flag = Arc::new(WakeFlag(AtomicBool::new(false)));
+        let waker = Arc::clone(&wake_flag).into();
+        assert!(
+            Pin::new(&mut waiting)
+                .poll(&mut Context::from_waker(&waker))
+                .is_pending()
+        );
+        let probe = endpoint.snapshot().active_probe;
+
+        tokio::time::advance(Duration::from_millis(40)).await;
+        wake_flag.0.store(false, Ordering::Release);
+        if read_snapshot {
+            endpoint.snapshot();
+        } else {
+            endpoint.load_metric();
+        }
+        assert!(wake_flag.0.load(Ordering::Acquire));
+        assert_eq!(endpoint.snapshot().active_probe, probe);
+        drop(waiting);
+        drop(first);
+    }
+}
+
+#[tokio::test(start_paused = true)]
 async fn endpoint_exposes_only_a_small_scheduling_horizon() {
     let started = Arc::new(Notify::new());
     let release = Arc::new(Notify::new());

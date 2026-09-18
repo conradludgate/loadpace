@@ -10,7 +10,9 @@
 
 use super::{EndpointOwner, EndpointState, RequestGuard, begin_dispatch, lock, now};
 use arc_swap::ArcSwap;
-use loadpace::{ControllerSnapshot, DispatchReservation, EndpointConfig, Outcome, ScheduleError};
+use loadpace::{
+    Completion, ControllerSnapshot, DispatchReservation, EndpointConfig, ScheduleError,
+};
 use moka::future::Cache;
 use rama::{
     Layer, Service,
@@ -305,8 +307,10 @@ where
             {
                 break selected;
             }
-            lock(&selected.0.state.controller).cancel(selected.1, now());
-            selected.0.state.dispatch.notify_waiters();
+            selected
+                .0
+                .state
+                .with_controller(|controller| controller.cancel(selected.1, now()));
         };
 
         input.extensions().insert(ConnectorTarget(HostWithPort::new(
@@ -324,9 +328,9 @@ where
             .await
             .map_err(DnsServiceError::Inner);
         let outcome = if result.is_ok() {
-            Outcome::Success
+            Completion::Success
         } else {
-            Outcome::Failure
+            Completion::Failure
         };
         guard.finish(outcome, now());
         result
@@ -358,7 +362,9 @@ impl Endpoint {
             hostname: self.hostname.clone(),
             port: self.port,
             ip: self.ip,
-            controller: lock(&self.state.controller).snapshot(now()),
+            controller: self
+                .state
+                .with_controller(|controller| controller.snapshot(now())),
         }
     }
 }
@@ -559,15 +565,10 @@ fn reserve_p2c(
 ) -> Result<(Arc<Endpoint>, DispatchReservation), ScheduleError> {
     if endpoints.len() == 1 {
         let endpoint = Arc::clone(&endpoints[0]);
-        let mut controller = lock(&endpoint.state.controller);
-        let previous_probe = controller.active_probe();
-        controller.refresh(current);
-        let reservation = controller.reserve(current);
-        let probe_changed = previous_probe != controller.active_probe();
-        drop(controller);
-        if probe_changed {
-            endpoint.state.dispatch.notify_waiters();
-        }
+        let reservation = endpoint.state.with_controller(|controller| {
+            controller.refresh(current);
+            controller.reserve(current)
+        });
         return Ok((endpoint, reservation?));
     }
 
@@ -588,8 +589,6 @@ fn reserve_p2c(
     let mut lower_controller = lock(&lower.state.controller);
     let mut upper_controller = lock(&upper.state.controller);
 
-    let lower_probe = lower_controller.active_probe();
-    let upper_probe = upper_controller.active_probe();
     let lower_load = lower_controller.load(current);
     let upper_load = upper_controller.load(current);
 
@@ -614,15 +613,11 @@ fn reserve_p2c(
             })
     };
 
-    let lower_probe_changed = lower_probe != lower_controller.active_probe();
-    let upper_probe_changed = upper_probe != upper_controller.active_probe();
+    let lower_changes = lower_controller.take_changes();
+    let upper_changes = upper_controller.take_changes();
     drop(lower_controller);
     drop(upper_controller);
-    if lower_probe_changed {
-        lower.state.dispatch.notify_waiters();
-    }
-    if upper_probe_changed {
-        upper.state.dispatch.notify_waiters();
-    }
+    lower.state.notify_changes(lower_changes);
+    upper.state.notify_changes(upper_changes);
     selected
 }
