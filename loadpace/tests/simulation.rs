@@ -61,6 +61,34 @@ fn simulator_models_worker_capacity_and_queueing_latency() {
 }
 
 #[test]
+fn simulator_preserves_feedback_decay_between_events() {
+    let initial_concurrency = 32;
+    let report = simulate(SimulationConfig {
+        duration: Duration::from_secs(1),
+        offered_rate: 1_600.0,
+        endpoints: vec![SimulatedEndpoint {
+            config: EndpointConfig::new(Duration::from_millis(20), initial_concurrency),
+            workers: 2,
+            service_time: Duration::from_secs(2),
+        }],
+        seed: 42,
+    });
+
+    assert_eq!(report.offered, 1_601);
+    assert_eq!(report.completed, 0);
+    assert!(report.dispatched > initial_concurrency as u64);
+    assert!(
+        report.dispatched < (initial_concurrency * 3) as u64,
+        "missing feedback should slow dispatch well before the inflight cap: {report:?}"
+    );
+    assert_eq!(report.accepted + report.backpressured, report.offered);
+    assert_eq!(
+        report.endpoints[0].snapshot.inflight as u64,
+        report.dispatched
+    );
+}
+
+#[test]
 fn simulator_makes_progress_above_timer_precision() {
     let report = simulate(SimulationConfig {
         duration: Duration::ZERO,

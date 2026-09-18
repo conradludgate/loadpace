@@ -152,12 +152,13 @@ pub fn simulate(config: SimulationConfig) -> SimulationReport {
         })
         .collect();
     let mut completions: Vec<Completion> = Vec::new();
+    let mut cursor = start;
 
     while next_arrival <= end || completions.iter().any(|completion| completion.at <= end) {
         let next_completion = completions.iter().map(|completion| completion.at).min();
         let next_dispatch = endpoints
             .iter_mut()
-            .filter_map(|endpoint| next_dispatch_at(endpoint, start))
+            .filter_map(|endpoint| next_dispatch_at(endpoint, cursor))
             .min();
         let next_event = [Some(next_arrival), next_completion, next_dispatch]
             .into_iter()
@@ -167,6 +168,8 @@ pub fn simulate(config: SimulationConfig) -> SimulationReport {
         if now > end {
             break;
         }
+        debug_assert!(now >= cursor, "simulation time must not move backward");
+        cursor = now;
 
         complete_ready(&mut endpoints, &mut completions, now);
         drive_all(&mut endpoints, &mut completions, now);
