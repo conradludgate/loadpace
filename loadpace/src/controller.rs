@@ -165,6 +165,41 @@ pub enum Outcome {
     Failure,
 }
 
+/// How a dispatched request ended, for [`EndpointController::finish`].
+///
+/// Classify endpoint feedback separately from a local timeout or cancellation:
+/// only real feedback resets the controller's missing-feedback clock.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Completion {
+    /// Healthy endpoint feedback; observe the dispatch-to-completion RTT.
+    Success,
+    /// Unhealthy endpoint feedback; penalize the operating point without an RTT sample.
+    Failure,
+    /// No endpoint feedback, such as a local timeout or cancellation.
+    ///
+    /// Release inflight accounting and penalize the operating point, preserving
+    /// the missing-feedback clock while other requests remain inflight.
+    Abandoned,
+}
+
+/// Coalesced wakeup effects returned by [`EndpointController::take_changes`].
+///
+/// These flags request a state recheck, not a readiness grant. Multiple changes
+/// can accumulate before they are taken, including changes that undo one another.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ControllerChanges {
+    /// Space was released from the bounded scheduling horizon.
+    ///
+    /// Wake callers waiting to reserve a slot. Other callers may have consumed
+    /// the space since it was released, so admission must still be checked.
+    pub admission: bool,
+    /// Queued requests should recheck their dispatch state.
+    ///
+    /// FIFO order, pacing deadlines, probe transitions, or inflight capacity
+    /// may have changed. This flag can be conservative.
+    pub dispatch: bool,
+}
+
 /// A request that has reserved a slot in the endpoint's virtual queue.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DispatchReservation {
@@ -299,6 +334,7 @@ pub struct EndpointController {
     failures: u64,
     feedback_epoch: Option<FeedbackEpoch>,
     probe_rng: StdRng,
+    changes: ControllerChanges,
 }
 
 impl EndpointController {
@@ -355,6 +391,7 @@ impl EndpointController {
             failures: 0,
             feedback_epoch: None,
             probe_rng,
+            changes: ControllerChanges::default(),
         }
     }
 
@@ -386,6 +423,23 @@ impl EndpointController {
     /// Returns the number of dispatched requests awaiting completion.
     pub fn inflight(&self) -> usize {
         self.inflight
+    }
+
+    /// Takes and clears wakeup effects accumulated by controller operations.
+    ///
+    /// New controllers have no pending effects. Calling this method does not
+    /// refresh policy or advance the clock. Effects also accumulate when
+    /// [`Self::load`] or [`Self::snapshot`] changes time-driven pacing state.
+    ///
+    /// One adapter should own delivery: drain effects while holding its
+    /// controller lock, then release the lock before waking waiters. Register
+    /// waiters before inspecting state to avoid losing a concurrent wakeup.
+    /// The FIFO head already checking [`Self::dispatch_state`] can consume its
+    /// own refresh effects without waking itself; later reservations remain
+    /// blocked until it dispatches or is cancelled.
+    #[must_use]
+    pub fn take_changes(&mut self) -> ControllerChanges {
+        std::mem::take(&mut self.changes)
     }
 
     /// Returns whether the bounded virtual queue can accept a reservation.
@@ -455,6 +509,8 @@ impl EndpointController {
         };
 
         self.pending.remove(position);
+        self.changes.admission = true;
+        self.changes.dispatch = true;
         self.rebuild_virtual_queue(now);
         true
     }
@@ -540,6 +596,8 @@ impl EndpointController {
             });
         }
         self.inflight += 1;
+        self.changes.admission = true;
+        self.changes.dispatch = true;
         self.pacer.commit(now);
         self.rebuild_virtual_queue(now);
 
@@ -548,6 +606,33 @@ impl EndpointController {
             dispatched_at: now,
             was_paced: pending.was_paced,
         })
+    }
+
+    /// Finishes a dispatched request using elapsed time from its dispatch token.
+    ///
+    /// Successful feedback observes `now - request.dispatched_at()`, clamped
+    /// to zero if the clock moved backward. This excludes time before actual
+    /// dispatch, including reservation and readiness waits. Use
+    /// [`Self::on_complete`] when latency is measured separately.
+    ///
+    /// [`Completion::Failure`] represents real endpoint feedback; use
+    /// [`Completion::Abandoned`] for a local timeout or cancellation without
+    /// feedback. Neither records a healthy RTT sample.
+    ///
+    /// Returns `false` without changing state for a foreign request, or `true`
+    /// after consuming a request owned by this controller.
+    pub fn finish(
+        &mut self,
+        request: InFlightRequest,
+        completion: Completion,
+        now: Instant,
+    ) -> bool {
+        let latency = now.saturating_duration_since(request.dispatched_at());
+        match completion {
+            Completion::Success => self.on_complete(request, Outcome::Success, latency, now),
+            Completion::Failure => self.on_complete(request, Outcome::Failure, latency, now),
+            Completion::Abandoned => self.on_abandoned(request, now),
+        }
     }
 
     /// Records a response and updates the endpoint's operating point.
@@ -595,6 +680,7 @@ impl EndpointController {
         }
 
         self.inflight -= 1;
+        self.changes.dispatch = true;
         self.feedback_epoch = (self.inflight > 0).then(|| FeedbackEpoch {
             last_feedback_at: now,
             expected_rtt: self.latency.expected_rtt(),
@@ -621,6 +707,7 @@ impl EndpointController {
         self.failures += 1;
         self.gradient.on_failure_at(now);
         self.inflight -= 1;
+        self.changes.dispatch = true;
         if self.inflight == 0 {
             self.feedback_epoch = None;
         }
@@ -643,6 +730,7 @@ impl EndpointController {
     /// Framework adapters should call this through ordinary dispatch or load
     /// operations rather than running a separate application probe task.
     pub fn refresh(&mut self, now: Instant) {
+        let previous_refresh = self.next_dispatch_refresh_at();
         // Refresh is called by normal dispatch and load-metric paths. Once an
         // endpoint has produced a sample, keeping the schedule here means an
         // endpoint that P2C is beginning to avoid can still receive a probe.
@@ -655,6 +743,7 @@ impl EndpointController {
         }
         let _ = self.probe.active(now);
         self.update_rate(now);
+        self.changes.dispatch |= previous_refresh != self.next_dispatch_refresh_at();
     }
 
     /// Returns the currently active probe, if any.
@@ -755,6 +844,7 @@ impl EndpointController {
             .front()
             .is_some_and(|entry| entry.scheduled_at < next);
         if self.pacer.interval() != previous_interval || virtual_head_expired {
+            self.changes.dispatch = true;
             self.rebuild_virtual_queue(now);
         }
     }

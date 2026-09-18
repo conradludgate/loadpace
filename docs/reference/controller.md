@@ -44,12 +44,14 @@ future controller implementation can preserve this API.
 | `reserve(now)` | Appends a bounded virtual queue reservation |
 | `dispatch_state(reservation, now)` | Refreshes time-driven policy, then reports `Ready`, a recheck deadline, FIFO wait, inflight limit, or cancellation |
 | `on_dispatched(reservation, now)` | Atomically commits a ready reservation, or returns its current `DispatchState` |
+| `finish(request, completion, now)` | Releases dispatched work using success, failure feedback, or abandonment; derives RTT from the dispatch token |
 | `on_complete(request, outcome, latency, now)` | Releases inflight state and updates feedback; returns whether the token belonged to an active request |
 | `on_abandoned(request, now)` | Releases and penalizes dispatched work that ended without endpoint feedback, without resetting the silence clock |
 | `cancel(reservation, now)` | Removes a queued reservation and rebuilds the virtual tail |
 | `load(now)` | Returns predicted completion delay in seconds; lower is better |
 | `snapshot(now)` | Returns metrics and current controller state |
 | `refresh(now)` | Expires probes and refreshes the derived pacing rate |
+| `take_changes()` | Takes and clears accumulated admission and dispatch wakeup effects without advancing policy |
 
 Reservations must be dispatched FIFO within one endpoint. Framework adapters
 should enforce this by making later response futures wait for earlier
@@ -85,6 +87,45 @@ client-side timeout or cancellation where no response was received.
 Healthy Gradient2 updates are time-gated by `Gradient2Config::update_interval`.
 RTT samples continue to update the latency estimator, but a higher response
 rate cannot cause proportionally faster operating-point growth.
+
+## `Completion` and `finish`
+
+For an integration that measures RTT from actual dispatch, call
+`finish(request, completion, now)`. The controller derives elapsed time from
+the `InFlightRequest`, excluding the reservation's local waiting time.
+
+| Classification | Meaning |
+| --- | --- |
+| `Completion::Success` | Healthy endpoint feedback; record elapsed RTT and reset feedback silence |
+| `Completion::Failure` | Unhealthy endpoint feedback; reduce the operating point and reset feedback silence without an RTT sample |
+| `Completion::Abandoned` | No endpoint feedback, such as a local timeout or cancellation; reduce the operating point without resetting silence while other work remains inflight |
+
+The caller must distinguish a local timeout from an unhealthy response.
+An error result alone does not establish that the endpoint provided feedback.
+The existing `on_complete` and `on_abandoned` methods remain available;
+`on_complete` accepts an explicit RTT when it is measured separately.
+
+## `ControllerChanges` and wakeups
+
+`take_changes()` returns two coalesced flags: `admission` means queue space was
+released, and `dispatch` means queued requests should recheck FIFO order,
+deadlines, or inflight capacity. These are wakeup hints, not readiness grants.
+Flags remain set until taken, even if later operations consume released space.
+Calling `take_changes()` again without further changes returns both flags unset.
+
+An adapter should register its waiter before checking state, perform controller
+operations under its lock, and take the changes before releasing that lock.
+It then notifies the indicated waiters after unlocking. This applies to load
+and snapshot reads too: they can change pacing through feedback decay or probes.
+When selecting between two locked controllers, drain both controllers and
+release both locks before notifying either endpoint.
+
+The FIFO head checking its own dispatch state already observes its refreshed
+deadline. It can consume those refresh effects without broadcasting a wakeup
+to itself; subsequent reservations remain blocked behind it. Broadcasting on
+every refresh can create a busy loop when missing-feedback decay changes the
+rate continuously. Dispatch, cancellation, and completion must still notify
+other affected waiters. The core stores no wakers or runtime-specific state.
 
 ## `ControllerSnapshot`
 

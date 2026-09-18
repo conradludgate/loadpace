@@ -51,8 +51,8 @@ mod probe;
 mod simulator;
 
 pub use controller::{
-    ControllerSnapshot, DispatchReservation, DispatchState, EndpointConfig, EndpointController,
-    InFlightRequest, Outcome,
+    Completion, ControllerChanges, ControllerSnapshot, DispatchReservation, DispatchState,
+    EndpointConfig, EndpointController, InFlightRequest, Outcome,
 };
 pub use gcra::Gcra;
 pub use gradient::{Gradient2, Gradient2Config};
