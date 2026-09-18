@@ -1,3 +1,3 @@
 [workspace]
-members = ["loadpace", "loadpace-rama", "loadpace-tower"]
+members = ["loadpace", "loadpace-rama", "loadpace-tokio", "loadpace-tower"]
 resolver = "3"

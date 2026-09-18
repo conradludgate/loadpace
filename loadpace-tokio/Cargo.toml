@@ -1,0 +1,19 @@
+[package]
+name = "loadpace-tokio"
+version = "0.1.0-rc.4"
+edition = "2024"
+rust-version = "1.85"
+description = "Tokio guards for adaptive pacing and bounded admission of async operations"
+license = "MIT OR Apache-2.0"
+readme = "README.md"
+repository = "https://github.com/conradludgate/loadpace"
+keywords = ["load-balancing", "backpressure", "tokio", "congestion-control"]
+categories = ["network-programming", "asynchronous"]
+
+[dependencies]
+loadpace = { version = "=0.1.0-rc.4", path = "../loadpace" }
+tokio = { version = "1", features = ["sync", "time"] }
+
+[dev-dependencies]
+futures-util = "0.3"
+tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "test-util", "net"] }

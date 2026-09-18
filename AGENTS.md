@@ -2,13 +2,14 @@
 
 ## Repository shape
 
-This is a Cargo workspace targeting Rust 2024. The core and Tower crates
+This is a Cargo workspace targeting Rust 2024. The core, Tower, and Tokio crates
 support Rust 1.85 or newer; the Rama adapter requires Rust 1.96 or newer to
 match Rama 0.4's MSRV. The workspace contains:
 
 - `loadpace`: runtime-independent controller, GCRA pacer, RTT estimator,
   probes, and deterministic simulator;
 - `loadpace-tower`: Tower service and discovery integration;
+- `loadpace-tokio`: owned pacing guards for ordinary async operations;
 - `loadpace-rama`: Rama service and layer integration.
 
 Keep framework integrations in their own crates. The core crate must remain

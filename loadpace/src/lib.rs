@@ -10,7 +10,7 @@
 //!
 //! This crate contains the runtime-independent controller and deterministic
 //! simulator. Framework integrations live in separate crates such as
-//! `loadpace-tower` and `loadpace-rama`.
+//! `loadpace-tower`, `loadpace-rama`, and `loadpace-tokio`.
 //!
 //! # Deployment scope
 //!
@@ -29,6 +29,7 @@
 //!
 //! - Use [`EndpointController`] when integrating with a custom runtime or
 //!   service abstraction.
+//! - Use `loadpace-tokio` for ordinary async functions on Tokio.
 //! - Use [`simulate`] to test controller settings against deterministic
 //!   workloads before deploying them.
 //! - Use the `loadpace-tower` or `loadpace-rama` adapter when your client is

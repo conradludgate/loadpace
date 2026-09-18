@@ -25,7 +25,8 @@ flooding endpoints or hiding overload behind a queue.
 
 The core `loadpace` crate contains the controller and simulator. Framework
 adapters are separate crates, starting with [`loadpace-tower`](https://crates.io/crates/loadpace-tower)
-and [`loadpace-rama`](https://crates.io/crates/loadpace-rama).
+and [`loadpace-rama`](https://crates.io/crates/loadpace-rama). For ordinary async
+functions, use [`loadpace-tokio`](loadpace-tokio).
 
 Loadpace treats client-side load balancing as a control problem:
 
@@ -69,6 +70,7 @@ Use these when you already know what you want to accomplish:
 
 - [Integrate dynamic discovery with Tower P2C](docs/how-to/integrate-with-tower.md)
 - [Integrate a Rama service](docs/how-to/integrate-with-rama.md)
+- [Pace async functions with Tokio](docs/how-to/integrate-with-tokio.md)
 - [Run a deterministic simulation](docs/how-to/run-simulator.md)
 - [Tune queue and controller settings](docs/how-to/tune-an-endpoint.md)
 
@@ -79,6 +81,7 @@ Look up the public types, defaults, and state transitions:
 - [Controller and configuration reference](docs/reference/controller.md)
 - [Tower adapter reference](docs/reference/tower.md)
 - [Rama adapter reference](docs/reference/rama.md)
+- [Tokio adapter reference](docs/reference/tokio.md)
 - [Rust API documentation](https://docs.rs/loadpace)
 - [Tower API documentation](https://docs.rs/loadpace-tower)
 - [Rama API documentation](https://docs.rs/loadpace-rama)
@@ -91,8 +94,8 @@ Understand the design and the reasoning behind it:
 
 ## Install
 
-Loadpace targets the Rust 2024 Edition. The runtime-independent core and Tower
-adapter require Rust 1.85 or newer. The Rama adapter requires Rust 1.96 or
+Loadpace targets the Rust 2024 Edition. The runtime-independent core, Tower, and Tokio
+crates require Rust 1.85 or newer. The Rama adapter requires Rust 1.96 or
 newer, matching Rama 0.4's MSRV.
 
 The core controller and simulator have no async-runtime or framework
@@ -220,6 +223,13 @@ The separate `loadpace-rama` crate provides:
 - bounded admission errors through `ServiceError::Rejected`;
 - demand-driven automatic probing while an endpoint has queued work.
 
+The separate `loadpace-tokio` crate provides:
+
+- shared endpoint handles for ordinary async functions;
+- bounded reservation and cancellation guards;
+- async dispatch waits and explicit completion classification;
+- atomic comparison and reservation of two caller-sampled endpoints.
+
 The public `simulate` function in `loadpace` provides a deterministic
 worker-pool simulator for comparing controller changes and endpoint
 saturation.
@@ -257,7 +267,7 @@ cargo test --workspace --all-features --all-targets
 ## Project status
 
 The first implementation covers the deterministic controller, simulator, and
-Tower and Rama adapters. Hyper remains a separate future crate. Failure
+Tower, Rama, and Tokio adapters. Hyper remains a separate future crate. Failure
 classification beyond adapter-level errors, richer transport-readiness
 prediction, RTT baseline aging, and production tuning remain active design areas.
 See [How Loadpace controls and routes work](docs/explanation/design.md) for the current
