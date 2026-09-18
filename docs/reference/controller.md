@@ -157,3 +157,22 @@ endpoint that has become less attractive still receive an opportunity to
 recover; applications do not need a timer, background task, or probe callback.
 Use `new_with_seed` when a deterministic simulation or test needs reproducible
 probe decisions.
+
+## `reserve_pair` and `PairChoice`
+
+`reserve_pair(&mut first, &mut second, now)` compares two sampled controllers
+at the same instant and reserves the one with the lower predicted completion
+cost. Ties prefer the first argument. If the preferred controller rejects
+admission, it tries the other; if both reject, it returns the fallback error.
+Success returns `(PairChoice, DispatchReservation)`, identifying the controller
+that owns the token. Only that controller gains a reservation.
+
+Applications retain ownership of endpoint discovery, random sampling, and
+locking. Sample distinct endpoints and acquire locks in a consistent order,
+but pass controllers in sampled order so lock order does not bias ties. Use
+`reserve` directly when there is only one endpoint. A pair rejection does not
+mean every endpoint in the pool is full.
+
+Load comparison can refresh both controllers even on rejection. Drain changes
+from both while locked, then unlock both before notifying waiters. The helper
+does not drain effects, create a queue, or depend on an RNG or async runtime.

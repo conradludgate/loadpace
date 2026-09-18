@@ -589,29 +589,18 @@ fn reserve_p2c(
     let mut lower_controller = lock(&lower.state.controller);
     let mut upper_controller = lock(&upper.state.controller);
 
-    let lower_load = lower_controller.load(current);
-    let upper_load = upper_controller.load(current);
-
-    let prefer_lower = lower_load < upper_load || (lower_load == upper_load && first_is_lower);
-    let selected = if prefer_lower {
-        lower_controller
-            .reserve(current)
-            .map(|reservation| (Arc::clone(lower), reservation))
-            .or_else(|_| {
-                upper_controller
-                    .reserve(current)
-                    .map(|reservation| (Arc::clone(upper), reservation))
-            })
+    let selected = if first_is_lower {
+        loadpace::reserve_pair(&mut lower_controller, &mut upper_controller, current)
     } else {
-        upper_controller
-            .reserve(current)
-            .map(|reservation| (Arc::clone(upper), reservation))
-            .or_else(|_| {
-                lower_controller
-                    .reserve(current)
-                    .map(|reservation| (Arc::clone(lower), reservation))
-            })
-    };
+        loadpace::reserve_pair(&mut upper_controller, &mut lower_controller, current)
+    }
+    .map(|(choice, reservation)| {
+        let endpoint = match choice {
+            loadpace::PairChoice::First => first,
+            loadpace::PairChoice::Second => second,
+        };
+        (Arc::clone(endpoint), reservation)
+    });
 
     let lower_changes = lower_controller.take_changes();
     let upper_changes = upper_controller.take_changes();

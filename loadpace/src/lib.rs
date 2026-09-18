@@ -47,6 +47,7 @@ mod controller;
 mod gcra;
 mod gradient;
 mod latency;
+mod p2c;
 mod probe;
 mod simulator;
 
@@ -57,6 +58,7 @@ pub use controller::{
 pub use gcra::Gcra;
 pub use gradient::{Gradient2, Gradient2Config};
 pub use latency::{LatencyEstimator, LatencyEstimatorConfig};
+pub use p2c::{PairChoice, reserve_pair};
 pub use probe::{Probe, ProbeKind, ProbeSchedule};
 pub use simulator::{
     EndpointReport, SimulatedEndpoint, SimulationConfig, SimulationReport, simulate,
