@@ -32,6 +32,8 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
+mod error;
 mod service;
 
+pub use error::ServiceError;
 pub use service::{AdaptiveDiscovery, AdaptiveEndpoint, AdaptiveLayer, LoadMetric, ResponseFuture};

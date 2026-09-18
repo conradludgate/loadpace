@@ -1,3 +1,4 @@
+use crate::ServiceError;
 use futures_core::stream::{Stream, TryStream};
 use loadpace::{
     DispatchReservation, DispatchState, EndpointConfig, EndpointController, InFlightRequest,
@@ -11,7 +12,7 @@ use std::task::{Context, Poll, Waker};
 use std::time::Instant;
 use tower::discover::Change;
 use tower::load::Load;
-use tower::{Layer, Service};
+use tower::{BoxError, Layer, Service};
 
 /// A comparable predicted completion cost for P2C selection.
 ///
@@ -36,6 +37,7 @@ struct Shared<S> {
 struct ControllerState {
     controller: EndpointController,
     admission_waker: Option<Waker>,
+    failed: Option<ServiceError>,
 }
 
 impl ControllerState {
@@ -81,6 +83,11 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 /// be ready, and only then records the actual dispatch. Queue delay therefore
 /// never contaminates the RTT sample.
 ///
+/// Errors are returned as [`BoxError`]. An inner readiness error permanently
+/// closes admission and is shared as a [`ServiceError`] by queued requests and
+/// subsequent readiness checks. Already dispatched requests finish normally;
+/// errors from their response futures do not close admission.
+///
 /// The endpoint is intentionally single-owner: Tower's P2C balancer owns one
 /// service per discovered backend and does not require endpoint services to be
 /// cloneable. This lets readiness use the controller's queue state directly,
@@ -117,6 +124,7 @@ impl<S> AdaptiveEndpoint<S> {
                 controller: Mutex::new(ControllerState {
                     controller: EndpointController::new(config, now),
                     admission_waker: None,
+                    failed: None,
                 }),
                 dispatch: tokio::sync::Notify::new(),
             }),
@@ -241,14 +249,18 @@ impl<S, Request> Service<Request> for AdaptiveEndpoint<S>
 where
     S: Service<Request> + Send + 'static,
     S::Future: Send + 'static,
+    S::Error: Into<BoxError>,
     Request: Send + 'static,
 {
     type Response = S::Response;
-    type Error = S::Error;
-    type Future = ResponseFuture<S::Response, S::Error>;
+    type Error = BoxError;
+    type Future = ResponseFuture<S::Response, BoxError>;
 
     fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         let mut state = lock(&self.shared.controller);
+        if let Some(error) = &state.failed {
+            return Poll::Ready(Err(error.clone().into()));
+        }
         match state.poll_admission(cx) {
             Poll::Ready(()) => Poll::Ready(Ok(())),
             Poll::Pending => Poll::Pending,
@@ -259,7 +271,17 @@ where
         // With no endpoint clones, nothing can add another reservation between
         // this service reporting readiness and receiving the corresponding
         // call. Tower permits a panic if callers skip `poll_ready`.
-        let reservation = lock(&self.shared.controller).controller.reserve(now());
+        let reservation = {
+            let mut state = lock(&self.shared.controller);
+            // An inner readiness failure can arrive after outer readiness was
+            // granted, so `call` must observe closure before reserving a slot.
+            if let Some(error) = state.failed.clone() {
+                return ResponseFuture {
+                    inner: Box::pin(async move { Err(error.into()) }),
+                };
+            }
+            state.controller.reserve(now())
+        };
         let reservation =
             reservation.expect("AdaptiveEndpoint::call invoked without available readiness");
 
@@ -362,7 +384,7 @@ impl<S> PendingRequest<S> {
         self.shared.dispatch.notify_waiters();
     }
 
-    async fn wait_until_dispatchable(&self) {
+    async fn wait_until_dispatchable(&self) -> Result<(), ServiceError> {
         let reservation = self.reservation();
         loop {
             let notified = self.shared.dispatch.notified();
@@ -373,6 +395,9 @@ impl<S> PendingRequest<S> {
 
             let (state, probe_changed) = {
                 let mut shared_state = lock(&self.shared.controller);
+                if let Some(error) = &shared_state.failed {
+                    return Err(error.clone());
+                }
                 let previous_probe = shared_state.controller.active_probe();
                 let state = shared_state.controller.dispatch_state(reservation, now());
                 (
@@ -385,7 +410,7 @@ impl<S> PendingRequest<S> {
             }
 
             match state {
-                DispatchState::Ready => return,
+                DispatchState::Ready => return Ok(()),
                 DispatchState::WaitUntil(deadline) => {
                     let delay = deadline.saturating_duration_since(now());
                     let _ = tokio::time::timeout(delay, notified.as_mut()).await;
@@ -400,13 +425,32 @@ impl<S> PendingRequest<S> {
         }
     }
 
-    async fn start<Request>(&mut self, request: Request) -> Result<S::Future, S::Error>
+    async fn start<Request>(&mut self, request: Request) -> Result<S::Future, BoxError>
     where
         S: Service<Request>,
+        S::Error: Into<BoxError>,
     {
         let shared = Arc::clone(&self.shared);
         let mut service = shared.service.lock().await;
-        std::future::poll_fn(|cx| service.poll_ready(cx)).await?;
+        if let Some(error) = lock(&shared.controller).failed.clone() {
+            return Err(error.into());
+        }
+        if let Err(error) = std::future::poll_fn(|cx| service.poll_ready(cx)).await {
+            let error = ServiceError::new(error.into());
+            // Publish closure while holding the service lock so no queued
+            // caller can poll the failed service again, then wake all waiters.
+            let admission_waker = {
+                let mut state = lock(&shared.controller);
+                state.failed = Some(error.clone());
+                state.controller.on_admission_failure(now());
+                state.take_admission_waker()
+            };
+            if let Some(waker) = admission_waker {
+                waker.wake();
+            }
+            shared.dispatch.notify_waiters();
+            return Err(error.into());
+        }
 
         // Controller state may have changed while the inner service was
         // becoming ready. Keep its readiness claim and wait for the revised
@@ -430,7 +474,7 @@ impl<S> PendingRequest<S> {
                     self.mark_dispatched(active);
                     break;
                 }
-                Err(_) => self.wait_until_dispatchable().await,
+                Err(_) => self.wait_until_dispatchable().await?,
             }
         }
         // Committing the FIFO head changes the next reservation's deadline.
@@ -439,18 +483,16 @@ impl<S> PendingRequest<S> {
         Ok(service.call(request))
     }
 
-    async fn execute<Request>(mut self, request: Request) -> Result<S::Response, S::Error>
+    async fn execute<Request>(mut self, request: Request) -> Result<S::Response, BoxError>
     where
         S: Service<Request>,
+        S::Error: Into<BoxError>,
     {
-        self.wait_until_dispatchable().await;
+        self.wait_until_dispatchable().await?;
 
         let response = match self.start(request).await {
             Ok(response) => response,
             Err(error) => {
-                lock(&self.shared.controller)
-                    .controller
-                    .on_admission_failure(now());
                 self.finish(Outcome::Failure, now());
                 return Err(error);
             }
@@ -462,7 +504,7 @@ impl<S> PendingRequest<S> {
             Outcome::Failure
         };
         self.finish(outcome, now());
-        response
+        response.map_err(Into::into)
     }
 }
 

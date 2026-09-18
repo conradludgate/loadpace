@@ -19,7 +19,7 @@ The adapter targets the Rust 2024 Edition and requires Rust 1.85 or newer.
 `AdaptiveEndpoint<S>` implements:
 
 ```text
-tower::Service<Request, Response = S::Response, Error = S::Error>
+tower::Service<Request, Response = S::Response, Error = tower::BoxError>
 tower::load::Load<Metric = LoadMetric>
 ```
 
@@ -37,7 +37,19 @@ semaphore.
 
 `AdaptiveLayer` wraps a service in an endpoint and can be used directly in a
 `tower::ServiceBuilder` stack. The inner service needs to be `Send`, but does
-not need to be `Sync`; its response and error types do not need to be `Send`.
+not need to be `Sync`; its response type does not need to be `Send`. Its error
+type must implement `Into<tower::BoxError>`, as with Tower's `Buffer`.
+
+An inner `poll_ready` error permanently closes the endpoint. Queued requests
+and subsequent outer readiness checks return a boxed `loadpace_tower::ServiceError`
+sharing the original cause through `std::error::Error::source`. The failed
+inner service is never polled again, and Tower's balancer can remove the
+endpoint. A `call` made using a readiness grant obtained before the failure
+also returns that shared error without reserving another queue slot.
+
+Already dispatched requests finish normally. Errors from their response
+futures are converted directly into `tower::BoxError` and penalize the
+controller without closing admission.
 
 `snapshot` returns controller metrics. Probes are controller-owned and are
 automatically considered as the adapter refreshes endpoint state during normal
