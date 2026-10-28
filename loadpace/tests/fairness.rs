@@ -39,6 +39,7 @@ struct ClientRuntime {
     controllers: Vec<EndpointController>,
     pending: Vec<VecDeque<DispatchReservation>>,
     measurement_completed: u64,
+    completed_by_window: Vec<u64>,
 }
 
 struct ServerRuntime {
@@ -68,6 +69,7 @@ struct ServerArrival {
 struct FairnessReport {
     client_completed: Vec<u64>,
     server_completed: Vec<u64>,
+    client_windows: Vec<Vec<u64>>,
 }
 
 fn config(initial_rtt: Duration) -> EndpointConfig {
@@ -81,8 +83,27 @@ fn run(
     measurement_start: Duration,
     duration: Duration,
 ) -> FairnessReport {
+    run_with_seed(
+        clients,
+        initial_servers,
+        server_join,
+        measurement_start,
+        duration,
+        0,
+    )
+}
+
+fn run_with_seed(
+    clients: Vec<ClientSpec>,
+    initial_servers: Vec<ServerSpec>,
+    server_join: Option<(Duration, ServerSpec)>,
+    measurement_start: Duration,
+    duration: Duration,
+    seed: u64,
+) -> FairnessReport {
     assert!(!initial_servers.is_empty());
     assert!(duration > measurement_start);
+    let window_count = (duration - measurement_start).as_secs().div_ceil(30) as usize;
 
     let start = Instant::now();
     let end = start + duration;
@@ -120,7 +141,7 @@ fn run(
                                 client.network_rtt,
                             ),
                             start.max(join_at),
-                            1000 + client_index as u64,
+                            1000 + client_index as u64 + seed,
                         )
                     })
                     .collect(),
@@ -128,12 +149,13 @@ fn run(
                     .map(|_| VecDeque::new())
                     .collect(),
                 measurement_completed: 0,
+                completed_by_window: vec![0; window_count],
             }
         })
         .collect();
     let mut completions: Vec<Completion> = Vec::new();
     let mut server_arrivals: Vec<ServerArrival> = Vec::new();
-    let mut rng = StdRng::seed_from_u64(42);
+    let mut rng = StdRng::seed_from_u64(42 + seed);
     let mut pending_server_join = server_join.map(|(at, spec)| (start + at, spec));
 
     loop {
@@ -199,7 +221,7 @@ fn run(
                 client.controllers.push(EndpointController::new_with_seed(
                     endpoint_config(&client.config, server.service_time, client.network_rtt),
                     now,
-                    1000 + client_index as u64,
+                    1000 + client_index as u64 + seed,
                 ));
                 client.pending.push(VecDeque::new());
             }
@@ -229,6 +251,11 @@ fn run(
                 );
                 if completion.at >= measurement_start {
                     client.measurement_completed += 1;
+                    let window = completion.at.duration_since(measurement_start).as_secs() / 30;
+                    // Window counts use half-open intervals, excluding an exact end boundary.
+                    if let Some(count) = client.completed_by_window.get_mut(window as usize) {
+                        *count += 1;
+                    }
                 }
                 if completion.at >= measurement_start {
                     servers[completion.server].measurement_completed += 1;
@@ -341,11 +368,13 @@ fn run(
         cursor = now;
     }
 
+    let (client_completed, client_windows) = runtimes
+        .into_iter()
+        .map(|client| (client.measurement_completed, client.completed_by_window))
+        .unzip();
     FairnessReport {
-        client_completed: runtimes
-            .into_iter()
-            .map(|client| client.measurement_completed)
-            .collect(),
+        client_completed,
+        client_windows,
         server_completed: servers
             .into_iter()
             .map(|server| server.measurement_completed)
@@ -359,9 +388,20 @@ fn endpoint_config(
     network_rtt: Duration,
 ) -> EndpointConfig {
     let uncongested_rtt = service_time + network_rtt;
+    // Recalculate the endpoint RTT without replacing the caller's absolute delay budget.
     EndpointConfig::new(uncongested_rtt, base.initial_concurrency())
+        .with_queue_tolerance(base.queue_tolerance())
         .with_queue_capacity(base.queue_capacity())
         .with_max_inflight(base.max_inflight())
+}
+
+#[test]
+fn endpoint_config_retains_explicit_queue_tolerance() {
+    let base = config(Duration::from_millis(10)).with_queue_tolerance(Duration::from_millis(2));
+    let endpoint = endpoint_config(&base, Duration::from_millis(10), Duration::from_millis(90));
+
+    assert_eq!(endpoint.expected_rtt(), Duration::from_millis(100));
+    assert_eq!(endpoint.queue_tolerance(), Duration::from_millis(2));
 }
 
 fn jain(values: &[u64]) -> f64 {
@@ -469,6 +509,8 @@ fn clients_with_heterogeneous_network_rtt_all_make_progress() {
     let mut clients = client_specs(8, Duration::ZERO);
     for client in &mut clients[4..] {
         client.network_rtt = Duration::from_millis(90);
+        // Preserve the original scenario's RTT-relative default: 50ms rather than 5ms.
+        client.config = config(Duration::from_millis(100));
     }
     let report = run(
         clients,
@@ -486,4 +528,51 @@ fn clients_with_heterogeneous_network_rtt_all_make_progress() {
         "{report:?}"
     );
     assert!(jain(&report.client_completed) > 0.95, "{report:?}");
+}
+
+#[test]
+fn equal_queue_budgets_remain_fair_across_rtts_and_baseline_windows() {
+    for seed in [0, 100, 200, 300, 400] {
+        let mut clients = client_specs(8, Duration::ZERO);
+        for (index, client) in clients.iter_mut().enumerate() {
+            if index >= 4 {
+                client.network_rtt = Duration::from_millis(90);
+            }
+            client.config = config(Duration::from_millis(10) + client.network_rtt)
+                .with_queue_tolerance(Duration::from_millis(5));
+        }
+        let report = run_with_seed(
+            clients,
+            vec![server(4)],
+            None,
+            Duration::from_secs(90),
+            Duration::from_secs(600),
+            seed,
+        );
+
+        // Check every 30s window, rather than letting an aggregate hide late drift.
+        // The initial 90s permit convergence under the common queue-delay target.
+        for window in 0..report.client_windows[0].len() {
+            let counts: Vec<_> = report
+                .client_windows
+                .iter()
+                .map(|counts| counts[window])
+                .collect();
+            let fairness = jain(&counts);
+            let throughput = counts.iter().sum::<u64>() as f64 / 30.0;
+            assert!(
+                counts.iter().all(|count| *count > 0),
+                "seed={seed} window={window} counts={counts:?}"
+            );
+            assert!(
+                fairness > 0.95,
+                "seed={seed} window={window} jain={fairness} counts={counts:?}"
+            );
+            // Four 10ms workers provide 400 req/s; fairness must not come from idling.
+            assert!(
+                throughput > 360.0,
+                "seed={seed} window={window} throughput={throughput}"
+            );
+        }
+    }
 }
