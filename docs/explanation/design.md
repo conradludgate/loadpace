@@ -186,6 +186,23 @@ RTTs, several probe seeds and multiple rolling-baseline lifetimes. This is
 bounded evidence for that scenario, not a fairness guarantee for arbitrary
 workloads or a requirement that every application choose the same policy.
 
+The capacity-change fairness scenario keeps service time at 10ms while reducing
+the server from four workers to one at 120s, then restoring four at 240s. Running
+requests finish normally; waiting requests use a shared FIFO queue and the current
+worker limit. Clients receive no notification or configuration change. Both the
+RTT-relative defaults and a shared 5ms budget are tested across five seeds through
+600s. Every client must progress in each 30s window, admission/inflight accounting
+must remain bounded, and full-capacity throughput must recover above 90% in every
+window from 300s onward. Shared-budget fairness must also recover above Jain 0.95.
+
+These checks do not establish a hard server queue-delay bound. In the measured
+loss transitions, peak queue waits reach about 2s with RTT-relative budgets and
+0.9s with shared budgets. Some later one-worker windows fall below 90%
+utilization; a fixed one-worker control also exhibits this behavior. A configured
+queue tolerance is a feedback target, not a guarantee that transient queueing
+will stay below that duration. Capacity changes therefore remain a tuning and
+validation concern despite eventual recovery.
+
 `ProbeSchedule` schedules the next decision from a randomized time interval
 rather than from a probability per request. The controller owns the random
 source and consults the schedule when normal dispatch or load-selection
