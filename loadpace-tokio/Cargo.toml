@@ -11,7 +11,7 @@ keywords = ["load-balancing", "backpressure", "tokio", "congestion-control"]
 categories = ["network-programming", "asynchronous"]
 
 [dependencies]
-loadpace = { version = "=0.1.0-rc.4", path = "../loadpace" }
+loadpace = { version = "=0.1.0-rc.5", path = "../loadpace" }
 tokio = { version = "1", features = ["sync", "time"] }
 
 [dev-dependencies]

@@ -1,6 +1,6 @@
 [package]
 name = "loadpace-tower"
-version = "0.1.0-rc.4"
+version = "0.1.0-rc.5"
 edition = "2024"
 rust-version = "1.85"
 description = "Tower adapter for adaptive client-side load balancing and backpressure"
@@ -12,7 +12,7 @@ categories = ["network-programming", "asynchronous"]
 
 [dependencies]
 futures-core = "0.3"
-loadpace = { version = "=0.1.0-rc.4", path = "../loadpace" }
+loadpace = { version = "=0.1.0-rc.5", path = "../loadpace" }
 pin-project-lite = "0.2"
 rand = "0.10"
 tokio = { version = "1", features = ["sync", "time"] }
