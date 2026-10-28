@@ -43,9 +43,22 @@ struct ClientRuntime {
 }
 
 struct ServerRuntime {
-    available_at: Vec<Instant>,
+    workers: usize,
+    in_service: usize,
+    pending: VecDeque<ServerArrival>,
     service_time: Duration,
     measurement_completed: u64,
+}
+
+struct CapacityChange {
+    at: Duration,
+    server: usize,
+    workers: usize,
+}
+
+struct ServiceCompletion {
+    at: Instant,
+    arrival: ServerArrival,
 }
 
 struct Completion {
@@ -70,6 +83,15 @@ struct FairnessReport {
     client_completed: Vec<u64>,
     server_completed: Vec<u64>,
     client_windows: Vec<Vec<u64>>,
+    windows: Vec<WindowMetrics>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct WindowMetrics {
+    max_server_queued: usize,
+    max_client_queued: usize,
+    max_inflight: usize,
+    max_queue_delay: Duration,
 }
 
 fn config(initial_rtt: Duration) -> EndpointConfig {
@@ -101,9 +123,38 @@ fn run_with_seed(
     duration: Duration,
     seed: u64,
 ) -> FairnessReport {
+    run_with_capacity_changes(
+        clients,
+        initial_servers,
+        server_join,
+        measurement_start,
+        duration,
+        seed,
+        Vec::new(),
+    )
+}
+
+fn run_with_capacity_changes(
+    clients: Vec<ClientSpec>,
+    initial_servers: Vec<ServerSpec>,
+    server_join: Option<(Duration, ServerSpec)>,
+    measurement_start: Duration,
+    duration: Duration,
+    seed: u64,
+    capacity_changes: Vec<CapacityChange>,
+) -> FairnessReport {
     assert!(!initial_servers.is_empty());
     assert!(duration > measurement_start);
+    assert!(
+        capacity_changes
+            .windows(2)
+            .all(|pair| pair[0].at < pair[1].at)
+    );
+    assert!(capacity_changes.iter().all(|change| {
+        change.server < initial_servers.len() && change.workers > 0 && change.at < duration
+    }));
     let window_count = (duration - measurement_start).as_secs().div_ceil(30) as usize;
+    let mut windows = vec![WindowMetrics::default(); window_count];
 
     let start = Instant::now();
     let end = start + duration;
@@ -112,7 +163,9 @@ fn run_with_seed(
     let mut servers: Vec<_> = initial_servers
         .iter()
         .map(|server| ServerRuntime {
-            available_at: vec![start; server.workers],
+            workers: server.workers,
+            in_service: 0,
+            pending: VecDeque::new(),
             service_time: server.service_time,
             measurement_completed: 0,
         })
@@ -154,9 +207,14 @@ fn run_with_seed(
         })
         .collect();
     let mut completions: Vec<Completion> = Vec::new();
+    let mut service_completions: Vec<ServiceCompletion> = Vec::new();
     let mut server_arrivals: Vec<ServerArrival> = Vec::new();
     let mut rng = StdRng::seed_from_u64(42 + seed);
     let mut pending_server_join = server_join.map(|(at, spec)| (start + at, spec));
+    let mut capacity_changes: VecDeque<_> = capacity_changes
+        .into_iter()
+        .map(|change| (start + change.at, change.server, change.workers))
+        .collect();
 
     loop {
         let next_arrival = runtimes
@@ -190,6 +248,8 @@ fn run_with_seed(
         let next_completion = completions.iter().map(|completion| completion.at).min();
         let next_server_arrival = server_arrivals.iter().map(|arrival| arrival.at).min();
         let next_server = pending_server_join.as_ref().map(|(at, _)| *at);
+        let next_capacity_change = capacity_changes.front().map(|(at, _, _)| *at);
+        let next_service_completion = service_completions.iter().map(|done| done.at).min();
         let Some(now) = [
             next_arrival,
             next_join,
@@ -197,6 +257,8 @@ fn run_with_seed(
             next_server_arrival,
             next_completion,
             next_server,
+            next_capacity_change,
+            next_service_completion,
         ]
         .into_iter()
         .flatten()
@@ -207,13 +269,24 @@ fn run_with_seed(
             break;
         }
 
+        while capacity_changes
+            .front()
+            .is_some_and(|(at, _, _)| *at <= now)
+        {
+            let (_, server, workers) = capacity_changes.pop_front().expect("change exists");
+            // Running requests finish; the new limit governs subsequent starts.
+            servers[server].workers = workers;
+        }
+
         if pending_server_join
             .as_ref()
             .is_some_and(|(at, _)| *at <= now)
         {
             let (_, server) = pending_server_join.take().expect("server join exists");
             servers.push(ServerRuntime {
-                available_at: vec![now; server.workers],
+                workers: server.workers,
+                in_service: 0,
+                pending: VecDeque::new(),
                 service_time: server.service_time,
                 measurement_completed: 0,
             });
@@ -233,6 +306,24 @@ fn run_with_seed(
                 client.next_arrival = Some(client.join_at + client.arrival_phase);
             }
         }
+
+        let mut remaining = Vec::with_capacity(service_completions.len());
+        for done in service_completions.drain(..) {
+            if done.at <= now {
+                let arrival = done.arrival;
+                servers[arrival.server].in_service -= 1;
+                completions.push(Completion {
+                    at: done.at + arrival.response_delay,
+                    dispatched_at: arrival.dispatched_at,
+                    client: arrival.client,
+                    server: arrival.server,
+                    request: arrival.request,
+                });
+            } else {
+                remaining.push(done);
+            }
+        }
+        service_completions = remaining;
 
         let mut remaining = Vec::with_capacity(completions.len());
         for completion in completions.drain(..) {
@@ -269,29 +360,37 @@ fn run_with_seed(
         let mut remaining = Vec::with_capacity(server_arrivals.len());
         for arrival in server_arrivals.drain(..) {
             if arrival.at <= now {
-                let server = &mut servers[arrival.server];
-                let worker = server
-                    .available_at
-                    .iter()
-                    .enumerate()
-                    .min_by_key(|(_, available_at)| **available_at)
-                    .expect("server must have a worker")
-                    .0;
-                let service_done =
-                    server.available_at[worker].max(arrival.at) + server.service_time;
-                server.available_at[worker] = service_done;
-                completions.push(Completion {
-                    at: service_done + arrival.response_delay,
-                    dispatched_at: arrival.dispatched_at,
-                    client: arrival.client,
-                    server: arrival.server,
-                    request: arrival.request,
-                });
+                servers[arrival.server].pending.push_back(arrival);
             } else {
                 remaining.push(arrival);
             }
         }
         server_arrivals = remaining;
+
+        let mut window = now
+            .checked_duration_since(measurement_start)
+            .map(|elapsed| elapsed.as_secs() as usize / 30)
+            .and_then(|index| windows.get_mut(index));
+        for server in &mut servers {
+            while server.in_service < server.workers {
+                let Some(arrival) = server.pending.pop_front() else {
+                    break;
+                };
+                if let Some(window) = window.as_mut() {
+                    window.max_queue_delay =
+                        window.max_queue_delay.max(now.duration_since(arrival.at));
+                }
+                server.in_service += 1;
+                service_completions.push(ServiceCompletion {
+                    at: now + server.service_time,
+                    arrival,
+                });
+            }
+            if let (Some(window), Some(arrival)) = (window.as_mut(), server.pending.front()) {
+                // Include requests still waiting, not just those that started service.
+                window.max_queue_delay = window.max_queue_delay.max(now.duration_since(arrival.at));
+            }
+        }
 
         for client in &mut runtimes {
             let Some(next_arrival) = client.next_arrival else {
@@ -362,11 +461,48 @@ fn run_with_seed(
             }
         }
 
+        if let Some(window) = window {
+            window.max_server_queued = window
+                .max_server_queued
+                .max(servers.iter().map(|server| server.pending.len()).sum());
+            window.max_client_queued = window.max_client_queued.max(
+                runtimes
+                    .iter()
+                    .flat_map(|client| &client.pending)
+                    .map(VecDeque::len)
+                    .sum(),
+            );
+            window.max_inflight = window.max_inflight.max(
+                runtimes
+                    .iter()
+                    .flat_map(|client| &client.controllers)
+                    .map(EndpointController::inflight)
+                    .sum(),
+            );
+        }
+
         if now == end {
             break;
         }
         cursor = now;
     }
+
+    // Every dispatched request remains in exactly one stage until its response.
+    let inflight: usize = runtimes
+        .iter()
+        .flat_map(|client| &client.controllers)
+        .map(EndpointController::inflight)
+        .sum();
+    assert_eq!(
+        inflight,
+        server_arrivals.len()
+            + service_completions.len()
+            + completions.len()
+            + servers
+                .iter()
+                .map(|server| server.pending.len())
+                .sum::<usize>()
+    );
 
     let (client_completed, client_windows) = runtimes
         .into_iter()
@@ -375,6 +511,7 @@ fn run_with_seed(
     FairnessReport {
         client_completed,
         client_windows,
+        windows,
         server_completed: servers
             .into_iter()
             .map(|server| server.measurement_completed)
@@ -573,6 +710,127 @@ fn equal_queue_budgets_remain_fair_across_rtts_and_baseline_windows() {
                 throughput > 360.0,
                 "seed={seed} window={window} throughput={throughput}"
             );
+        }
+    }
+}
+
+#[test]
+fn capacity_change_measurements_are_reproducible() {
+    let scenario = || {
+        run_with_capacity_changes(
+            client_specs(8, Duration::ZERO),
+            vec![server(4)],
+            None,
+            Duration::ZERO,
+            Duration::from_secs(15),
+            0,
+            vec![
+                CapacityChange {
+                    at: Duration::from_secs(5),
+                    server: 0,
+                    workers: 1,
+                },
+                CapacityChange {
+                    at: Duration::from_secs(10),
+                    server: 0,
+                    workers: 4,
+                },
+            ],
+        )
+    };
+    assert_eq!(scenario(), scenario());
+}
+
+#[test]
+fn capacity_loss_and_recovery_preserve_progress() {
+    for shared_budget in [false, true] {
+        for seed in [0, 100, 200, 300, 400] {
+            let mut clients = client_specs(8, Duration::ZERO);
+            for (index, client) in clients.iter_mut().enumerate() {
+                if index >= 4 {
+                    client.network_rtt = Duration::from_millis(90);
+                }
+                client.config = config(Duration::from_millis(10) + client.network_rtt);
+                if shared_budget {
+                    client.config = client
+                        .config
+                        .clone()
+                        .with_queue_tolerance(Duration::from_millis(5));
+                }
+            }
+            let report = run_with_capacity_changes(
+                clients,
+                vec![server(4)],
+                None,
+                Duration::ZERO,
+                Duration::from_secs(600),
+                seed,
+                vec![
+                    CapacityChange {
+                        at: Duration::from_secs(120),
+                        server: 0,
+                        workers: 1,
+                    },
+                    CapacityChange {
+                        at: Duration::from_secs(240),
+                        server: 0,
+                        workers: 4,
+                    },
+                ],
+            );
+
+            for (window, metrics) in report.windows.iter().enumerate() {
+                let counts: Vec<_> = report
+                    .client_windows
+                    .iter()
+                    .map(|counts| counts[window])
+                    .collect();
+                let throughput = counts.iter().sum::<u64>() as f64 / 30.0;
+                let fairness = jain(&counts);
+                println!(
+                    "capacity shared={shared_budget} seed={seed} seconds={} throughput={throughput:.3} jain={fairness:.6} counts={counts:?} {metrics:?}",
+                    window * 30,
+                );
+                let context = format!("shared={shared_budget} seed={seed} window={window}");
+                assert!(
+                    counts.iter().all(|count| *count > 0),
+                    "{context} {counts:?}"
+                );
+                assert!(metrics.max_client_queued <= 8 * 4, "{context} {metrics:?}");
+                assert!(metrics.max_inflight <= 8 * 1024, "{context} {metrics:?}");
+                assert!(
+                    metrics.max_server_queued <= metrics.max_inflight,
+                    "{context} {metrics:?}"
+                );
+
+                // Include both transition windows in the capacity/progress checks.
+                // Returning responses can straddle the worker-change boundary.
+                let capacity = if (4..8).contains(&window) {
+                    100.0
+                } else {
+                    400.0
+                };
+                assert!(
+                    throughput <= capacity * 1.02,
+                    "{context} throughput={throughput}"
+                );
+
+                // Queue tolerance is a control target, not a hard server-queue cap.
+                // Low-capacity utilization sometimes falls below 90% even without
+                // a worker change; those limitations are documented separately.
+
+                if window == 3 || window >= 10 {
+                    // Recover the existing >90% utilization check at full capacity,
+                    // allowing 60s after restoration; check every later 30s window.
+                    assert!(throughput > 360.0, "{context} throughput={throughput}");
+                }
+                if shared_budget && (window == 3 || (5..8).contains(&window) || window >= 10) {
+                    assert!(
+                        fairness > 0.95,
+                        "{context} jain={fairness} counts={counts:?}"
+                    );
+                }
+            }
         }
     }
 }
