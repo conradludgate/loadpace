@@ -173,6 +173,19 @@ regardless of its network RTT, while causing a dominant client to yield more
 absolute capacity. A probe does not permanently assign ownership; normal
 feedback decides what remains sustainable.
 
+Equal probe opportunities do not guarantee equal request shares when clients
+tolerate different amounts of queueing. `EndpointConfig` defaults the queue-delay
+budget to half the initial expected RTT, so clients with different network RTTs
+can start with different absolute delay targets. A client tolerating more shared
+queueing can sustain a larger share while another reduces its rate.
+
+When evaluating equal-share fairness among cooperative clients sharing a
+bottleneck, configure the same absolute `with_queue_tolerance` budget for each
+client. The deterministic fairness suite exercises this policy across network
+RTTs, several probe seeds and multiple rolling-baseline lifetimes. This is
+bounded evidence for that scenario, not a fairness guarantee for arbitrary
+workloads or a requirement that every application choose the same policy.
+
 `ProbeSchedule` schedules the next decision from a randomized time interval
 rather than from a probability per request. The controller owns the random
 source and consults the schedule when normal dispatch or load-selection
