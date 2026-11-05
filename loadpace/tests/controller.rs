@@ -93,6 +93,43 @@ fn gcra_rejects_an_unrepresentable_interval() {
 }
 
 #[test]
+fn latency_estimator_accepts_maximum_durations() {
+    let mut estimator = LatencyEstimator::new(LatencyEstimatorConfig {
+        initial_rtt: Duration::MAX,
+        short_alpha: 1.0,
+        long_alpha: 1.0,
+        ..LatencyEstimatorConfig::default()
+    });
+
+    assert_eq!(estimator.expected_rtt(), Duration::MAX);
+    assert_eq!(estimator.short(), Duration::MAX);
+    assert_eq!(estimator.long(), Duration::MAX);
+    assert_eq!(estimator.baseline(), Duration::MAX);
+
+    estimator.observe(Duration::MAX);
+    assert_eq!(estimator.expected_rtt(), Duration::MAX);
+    assert_eq!(estimator.short(), Duration::MAX);
+    assert_eq!(estimator.long(), Duration::MAX);
+    assert_eq!(estimator.baseline(), Duration::MAX);
+}
+
+#[test]
+fn latency_estimator_preserves_small_samples_after_large_estimates() {
+    let mut estimator = LatencyEstimator::new(LatencyEstimatorConfig {
+        initial_rtt: Duration::MAX,
+        short_alpha: 1.0,
+        long_alpha: 1.0,
+        min_rtt: Duration::from_nanos(1),
+        ..LatencyEstimatorConfig::default()
+    });
+
+    estimator.observe(Duration::from_nanos(123));
+    assert_eq!(estimator.short(), Duration::from_nanos(123));
+    assert_eq!(estimator.long(), Duration::from_nanos(123));
+    assert_eq!(estimator.expected_rtt(), Duration::from_nanos(123));
+}
+
+#[test]
 fn latency_estimator_keeps_short_and_long_views() {
     let mut estimator = LatencyEstimator::new(LatencyEstimatorConfig {
         initial_rtt: Duration::from_millis(100),

@@ -1,4 +1,4 @@
-use crate::gcra::saturating_add;
+use crate::gcra::{duration_from_secs_saturating, saturating_add};
 use std::time::{Duration, Instant};
 
 const BASELINE_BUCKETS: usize = 8;
@@ -34,6 +34,8 @@ impl Default for LatencyEstimatorConfig {
 ///
 /// The estimator intentionally receives dispatch-to-completion measurements;
 /// callers should not feed local queue or pacing delay into it.
+/// Estimates use floating-point seconds; conversion back to [`Duration`]
+/// saturates at [`Duration::MAX`] if rounding exceeds its representable range.
 #[derive(Clone, Debug)]
 pub struct LatencyEstimator {
     config: LatencyEstimatorConfig,
@@ -116,23 +118,23 @@ impl LatencyEstimator {
 
     /// Returns the long-term RTT used for Little's Law rate derivation.
     pub fn expected_rtt(&self) -> Duration {
-        Duration::from_secs_f64(self.long.max(self.config.min_rtt.as_secs_f64()))
+        duration_from_secs_saturating(self.long.max(self.config.min_rtt.as_secs_f64()))
     }
 
     /// Returns the short-term exponentially weighted RTT estimate.
     pub fn short(&self) -> Duration {
-        Duration::from_secs_f64(self.short)
+        duration_from_secs_saturating(self.short)
     }
 
     /// Returns the long-term exponentially weighted RTT estimate.
     pub fn long(&self) -> Duration {
-        Duration::from_secs_f64(self.long)
+        duration_from_secs_saturating(self.long)
     }
 
     /// Returns the minimum observed RTT, or the initial estimate before the
     /// first successful sample arrives.
     pub fn baseline(&self) -> Duration {
-        Duration::from_secs_f64(
+        duration_from_secs_saturating(
             self.baseline
                 .unwrap_or(self.config.initial_rtt.as_secs_f64())
                 .max(self.config.min_rtt.as_secs_f64()),
@@ -176,7 +178,7 @@ impl LatencyEstimator {
 }
 
 fn ewma(previous: f64, sample: f64, alpha: f64) -> f64 {
-    previous + alpha * (sample - previous)
+    (1.0 - alpha) * previous + alpha * sample
 }
 
 fn elapsed_bucket_count(elapsed: Duration, bucket_duration: Duration) -> u128 {

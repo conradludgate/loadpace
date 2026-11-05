@@ -125,7 +125,7 @@ fn duration_from_nanos(nanos: u128) -> Duration {
     )
 }
 
-fn duration_from_secs_saturating(seconds: f64) -> Duration {
+pub(crate) fn duration_from_secs_saturating(seconds: f64) -> Duration {
     if seconds.is_nan() || seconds <= 0.0 {
         return Duration::ZERO;
     }
