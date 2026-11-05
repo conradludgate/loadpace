@@ -1,6 +1,6 @@
 [package]
 name = "loadpace-rama"
-version = "0.1.0-rc.3"
+version = "0.1.0-rc.4"
 edition = "2024"
 rust-version = "1.96"
 description = "Rama adapter for adaptive client-side load balancing and backpressure"
@@ -16,7 +16,7 @@ dns = ["dep:arc-swap", "dep:moka", "rama/dns", "tokio/rt"]
 
 [dependencies]
 arc-swap = { version = "1.9", optional = true }
-loadpace = { version = "=0.1.0-rc.4", path = "../loadpace" }
+loadpace = { version = "=0.1.0-rc.5", path = "../loadpace" }
 moka = { version = "0.12", features = ["future"], optional = true }
 rama = { version = "0.4.0", default-features = false, features = ["std"] }
 rand = "0.10"
